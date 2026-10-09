@@ -14,7 +14,7 @@ class PagesTest extends TestCase
         $response = $this->get(route('home'));
 
         $response->assertOk();
-        $response->assertSee('NvonchiSearch');
+        $response->assertSee('ConfianceSearch');
     }
 
     public function test_about_page_is_accessible(): void
