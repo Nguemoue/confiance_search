@@ -22,7 +22,7 @@ class LatestTopicsWidget extends TableWidget
     public function table(Table $table): Table
     {
         return $table
-            ->query(fn (): Builder => Topic::query()->with('tags')->withCount('options')->latest('updated_at'))
+            ->query(fn (): Builder => Topic::query()->withCount('options')->latest('updated_at'))
             ->columns([
                 TextColumn::make('title')
                     ->label('Thématique')
@@ -30,10 +30,9 @@ class LatestTopicsWidget extends TableWidget
                     ->sortable()
                     ->limit(40),
 
-                TextColumn::make('tags.name')
-                    ->label('Pôles & Catégories')
-                    ->badge()
-                    ->color('primary'),
+                TextColumn::make('description')
+                    ->label('Description')
+                    ->limit(50),
 
                 TextColumn::make('options_count')
                     ->label('Fiches & Démarches')

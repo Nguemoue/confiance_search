@@ -8,7 +8,6 @@ use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
-use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
 use Illuminate\Support\Str;
@@ -24,12 +23,6 @@ class TopicsTable
                     ->searchable()
                     ->sortable()
                     ->description(fn (Topic $record): ?string => $record->description ? Str::limit($record->description, 50) : null),
-
-                TextColumn::make('tags.name')
-                    ->label('Tags')
-                    ->badge()
-                    ->color('primary')
-                    ->searchable(),
 
                 TextColumn::make('options_count')
                     ->label('Réponses / Options')
@@ -60,12 +53,6 @@ class TopicsTable
                     ->label('Statut de publication')
                     ->trueLabel('Publiés')
                     ->falseLabel('Brouillons'),
-
-                SelectFilter::make('tags')
-                    ->label('Filtrer par Tag')
-                    ->relationship('tags', 'name')
-                    ->preload()
-                    ->multiple(),
             ])
             ->recordActions([
                 EditAction::make(),

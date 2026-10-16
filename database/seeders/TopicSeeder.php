@@ -2,7 +2,6 @@
 
 namespace Database\Seeders;
 
-use App\Models\Tag;
 use App\Models\Topic;
 use App\Models\TopicOption;
 use Illuminate\Database\Seeder;
@@ -14,18 +13,7 @@ class TopicSeeder extends Seeder
      */
     public function run(): void
     {
-        // 1. Enterprise Tags / Pôles
-        $tags = [
-            'Ressources Humaines' => Tag::firstOrCreate(['name' => 'Ressources Humaines'], ['slug' => 'rh', 'color' => 'indigo']),
-            'Informatique & IT' => Tag::firstOrCreate(['name' => 'Informatique & IT'], ['slug' => 'it', 'color' => 'sky']),
-            'Finance & Achats' => Tag::firstOrCreate(['name' => 'Finance & Achats'], ['slug' => 'finance-achats', 'color' => 'emerald']),
-            'Opérations & Projets' => Tag::firstOrCreate(['name' => 'Opérations & Projets'], ['slug' => 'operations', 'color' => 'purple']),
-            'Sécurité & Conformité' => Tag::firstOrCreate(['name' => 'Sécurité & Conformité'], ['slug' => 'securite', 'color' => 'amber']),
-            'Onboarding' => Tag::firstOrCreate(['name' => 'Onboarding'], ['slug' => 'onboarding', 'color' => 'rose']),
-            'Télétravail' => Tag::firstOrCreate(['name' => 'Télétravail'], ['slug' => 'teletravail', 'color' => 'indigo']),
-        ];
-
-        // 2. Enterprise Topics & Operating Procedures (SOPs / FAQ)
+        // Enterprise Topics & Operating Procedures (SOPs / FAQ)
         $topicsData = [
             [
                 'title' => 'Ressources Humaines & Avantages Collaborateurs',
@@ -33,7 +21,6 @@ class TopicSeeder extends Seeder
                 'description' => 'Politiques relatives aux congés, notes de frais, mutuelle santé, télétravail et avantages sociaux de l’entreprise.',
                 'icon' => 'academic-cap',
                 'order' => 1,
-                'tags' => ['Ressources Humaines', 'Télétravail'],
                 'options' => [
                     [
                         'title' => 'Procédure de pose des congés payés & RTT',
@@ -71,7 +58,6 @@ class TopicSeeder extends Seeder
                 'description' => 'Accès aux postes de travail, configuration du VPN sécurisé, messagerie professionnelle et bonnes pratiques de cybersécurité.',
                 'icon' => 'compass',
                 'order' => 2,
-                'tags' => ['Informatique & IT', 'Sécurité & Conformité', 'Télétravail'],
                 'options' => [
                     [
                         'title' => 'Comment configurer et activer le VPN d’entreprise en télétravail ?',
@@ -109,7 +95,6 @@ class TopicSeeder extends Seeder
                 'description' => 'Processus de commande fournisseur, seuils de validation budgétaire, gestion des locaux et réservations d’espaces.',
                 'icon' => 'banknotes',
                 'order' => 3,
-                'tags' => ['Finance & Achats', 'Opérations & Projets'],
                 'options' => [
                     [
                         'title' => 'Circuit d’approbation des bons de commande (PO)',
@@ -140,7 +125,6 @@ class TopicSeeder extends Seeder
                 'description' => 'Programme d’accueil, livret collaborateur, remise du matériel et étapes clés des 90 premiers jours.',
                 'icon' => 'calendar',
                 'order' => 4,
-                'tags' => ['Onboarding', 'Ressources Humaines', 'Sécurité & Conformité'],
                 'options' => [
                     [
                         'title' => 'Étapes clés de la première semaine',
@@ -167,7 +151,7 @@ class TopicSeeder extends Seeder
             ],
         ];
 
-        Topic::withoutSyncingToSearch(function () use ($topicsData, $tags): void {
+        Topic::withoutSyncingToSearch(function () use ($topicsData): void {
             foreach ($topicsData as $data) {
                 $topic = Topic::updateOrCreate(
                     ['slug' => $data['slug']],
@@ -179,15 +163,6 @@ class TopicSeeder extends Seeder
                         'order' => $data['order'],
                     ]
                 );
-
-                // Attach tags
-                $tagIds = [];
-                foreach ($data['tags'] as $tagName) {
-                    if (isset($tags[$tagName])) {
-                        $tagIds[] = $tags[$tagName]->id;
-                    }
-                }
-                $topic->tags()->sync($tagIds);
 
                 // Create or update options
                 foreach ($data['options'] as $optionData) {

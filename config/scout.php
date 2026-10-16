@@ -213,10 +213,6 @@ return [
                             'type' => 'string',
                         ],
                         [
-                            'name' => 'tags',
-                            'type' => 'string',
-                        ],
-                        [
                             'name' => 'options_titles',
                             'type' => 'string',
                         ],
@@ -232,7 +228,7 @@ return [
                     'default_sorting_field' => 'created_at',
                 ],
                 'search-parameters' => [
-                    'query_by' => 'title,description,tags,options_titles,options_contents',
+                    'query_by' => 'title,description,options_titles,options_contents',
                 ],
             ],
         ],

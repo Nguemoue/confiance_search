@@ -1,6 +1,5 @@
 <?php
 
-use App\Models\Tag;
 use App\Models\Topic;
 use Illuminate\Database\Eloquent\Collection;
 use Livewire\Attributes\Url;
@@ -9,38 +8,73 @@ use Livewire\Component;
 new class extends Component
 {
     /**
-     * @var array{total_topics?: int, total_options?: int, total_tags?: int}
+     * @var array{total_topics?: int, total_options?: int}
      */
     public array $stats = [];
 
     #[Url(as: 'q', history: true)]
     public string $search = '';
 
-    #[Url(as: 'tag', history: true)]
-    public ?string $selectedTag = null;
+    /**
+     * @var list<string>
+     */
+    public array $searchHistory = [];
 
     public function mount(array $stats = []): void
     {
         $this->stats = $stats;
-    }
-
-    public function selectTag(?string $slug): void
-    {
-        if ($this->selectedTag === $slug) {
-            $this->selectedTag = null;
-        } else {
-            $this->selectedTag = $slug;
-        }
+        $this->searchHistory = session('search_history', []);
     }
 
     public function clearFilters(): void
     {
         $this->search = '';
-        $this->selectedTag = null;
     }
 
     /**
-     * Helper to highlight matching keywords safely with neon dark accent.
+     * Save non-empty search terms into user search history.
+     */
+    public function recordSearch(): void
+    {
+        $term = trim($this->search);
+        if (mb_strlen($term) >= 2) {
+            $history = session('search_history', []);
+            // Remove previous occurrence to put most recent at the top
+            $history = array_values(array_filter($history, fn ($item) => mb_strtolower($item) !== mb_strtolower($term)));
+            array_unshift($history, $term);
+            $history = array_slice($history, 0, 10);
+            session(['search_history' => $history]);
+            $this->searchHistory = $history;
+        }
+    }
+
+    public function updatedSearch(): void
+    {
+        $this->recordSearch();
+    }
+
+    public function applyHistory(string $term): void
+    {
+        $this->search = $term;
+        $this->recordSearch();
+    }
+
+    public function removeFromHistory(string $term): void
+    {
+        $history = session('search_history', []);
+        $history = array_values(array_filter($history, fn ($item) => $item !== $term));
+        session(['search_history' => $history]);
+        $this->searchHistory = $history;
+    }
+
+    public function clearHistory(): void
+    {
+        session(['search_history' => []]);
+        $this->searchHistory = [];
+    }
+
+    /**
+     * Helper to highlight matching keywords with clean Confiance navy accent.
      */
     public function highlightText(?string $text): string
     {
@@ -59,7 +93,7 @@ new class extends Component
 
         return preg_replace(
             $pattern,
-            '<mark class="bg-indigo-500/30 text-indigo-200 ring-1 ring-indigo-500/50 px-1 py-0.5 rounded font-semibold">$1</mark>',
+            '<mark class="bg-[#e2e8f4] text-[#081951] px-1 py-0.5 rounded font-semibold">$1</mark>',
             $escaped
         ) ?? $escaped;
     }
@@ -67,9 +101,9 @@ new class extends Component
     /**
      * @return array{
      *     topics: Collection<int, Topic>|\Illuminate\Support\Collection<int, Topic>,
-     *     popularTags: Collection<int, Tag>,
      *     totalTopicsCount: int,
-     *     totalOptionsCount: int
+     *     totalOptionsCount: int,
+     *     searchHistory: list<string>
      * }
      */
     public function with(): array
@@ -83,63 +117,40 @@ new class extends Component
                     ->query(function ($query): void {
                         $query->published()
                             ->with([
-                                'tags',
                                 'options' => fn ($q) => $q->published()->orderBy('order'),
                             ]);
-
-                        if (! empty($this->selectedTag)) {
-                            $query->whereHas('tags', fn ($q) => $q->where('slug', $this->selectedTag));
-                        }
                     })
                     ->get();
             } catch (\Throwable $e) {
                 // Graceful fallback to Eloquent multi-column search
-                $query = Topic::query()
+                $topics = Topic::query()
                     ->published()
                     ->with([
-                        'tags',
                         'options' => fn ($q) => $q->published()->orderBy('order'),
                     ])
                     ->search($trimmedSearch)
-                    ->orderBy('order');
-
-                if (! empty($this->selectedTag)) {
-                    $query->whereHas('tags', fn ($q) => $q->where('slug', $this->selectedTag));
-                }
-
-                $topics = $query->get();
+                    ->orderBy('order')
+                    ->get();
             }
         } else {
             // Standard Eloquent retrieval
-            $query = Topic::query()
+            $topics = Topic::query()
                 ->published()
                 ->with([
-                    'tags',
                     'options' => fn ($q) => $q->published()->orderBy('order'),
                 ])
-                ->orderBy('order');
-
-            if (! empty($this->selectedTag)) {
-                $query->whereHas('tags', fn ($q) => $q->where('slug', $this->selectedTag));
-            }
-
-            $topics = $query->get();
+                ->orderBy('order')
+                ->get();
         }
-
-        $popularTags = Tag::query()
-            ->withCount(['topics' => fn ($q) => $q->published()])
-            ->where('topics_count', '>', 0)
-            ->orderByDesc('topics_count')
-            ->get();
 
         $totalTopicsCount = $this->stats['total_topics'] ?? Topic::query()->published()->count();
         $totalOptionsCount = $this->stats['total_options'] ?? \App\Models\TopicOption::query()->published()->count();
 
         return [
             'topics' => $topics,
-            'popularTags' => $popularTags,
             'totalTopicsCount' => $totalTopicsCount,
             'totalOptionsCount' => $totalOptionsCount,
+            'searchHistory' => $this->searchHistory,
         ];
     }
 };
@@ -177,7 +188,6 @@ new class extends Component
         },
 
         init() {
-            // Auto-expand topic when search is running or default first
             const currentSearch = ($wire.search || '').trim();
             if (currentSearch !== '') {
                 @foreach($topics as $t)
@@ -204,338 +214,327 @@ new class extends Component
     @keydown.window.prevent.slash="$refs.searchInput.focus()"
     @keydown.window.cmd.k.prevent="$refs.searchInput.focus()"
     @keydown.window.ctrl.k.prevent="$refs.searchInput.focus()"
-    @keydown.escape="if (mobileSidebarOpen) { mobileSidebarOpen = false; } else if ($wire.search || $wire.selectedTag) { $wire.clearFilters(); }"
-    class="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col md:flex-row antialiased relative selection:bg-indigo-500 selection:text-white"
+    @keydown.escape="if (mobileSidebarOpen) { mobileSidebarOpen = false; } else if ($wire.search) { $wire.clearFilters(); }"
+    class="min-h-screen bg-[#f4f5f7] text-slate-800 flex flex-col md:flex-row antialiased relative selection:bg-[#081951] selection:text-white"
 >
     <!-- ============================================================== -->
-    <!-- MOBILE SIDEBAR BACKDROP & DRAWER                               -->
+    <!-- MOBILE SIDEBAR BACKDROP & DRAWER                              -->
     <!-- ============================================================== -->
     <div
         x-show="mobileSidebarOpen"
-        x-transition:enter="transition-opacity ease-linear duration-300"
+        x-transition:enter="transition-opacity ease-linear duration-200"
         x-transition:enter-start="opacity-0"
         x-transition:enter-end="opacity-100"
-        x-transition:leave="transition-opacity ease-linear duration-200"
+        x-transition:leave="transition-opacity ease-linear duration-150"
         x-transition:leave-start="opacity-100"
         x-transition:leave-end="opacity-0"
         @click="mobileSidebarOpen = false"
-        class="fixed inset-0 bg-black/80 backdrop-blur-sm z-40 md:hidden"
+        class="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-40 md:hidden"
         style="display: none;"
     ></div>
 
     <aside
         x-show="mobileSidebarOpen"
-        x-transition:enter="transition ease-out duration-300 transform"
+        x-transition:enter="transition ease-out duration-250 transform"
         x-transition:enter-start="-translate-x-full"
         x-transition:enter-end="translate-x-0"
         x-transition:leave="transition ease-in duration-200 transform"
         x-transition:leave-start="translate-x-0"
         x-transition:leave-end="-translate-x-full"
-        class="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-zinc-950/95 border-r border-zinc-800/90 z-50 flex flex-col md:hidden backdrop-blur-2xl shadow-2xl"
+        class="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-white border-r border-slate-200 z-50 flex flex-col md:hidden shadow-xl"
         style="display: none;"
     >
         <!-- Mobile Sidebar Header -->
-        <div class="h-16 px-5 border-b border-zinc-800/80 flex items-center justify-between">
-            <a href="{{ route('home') }}" class="flex items-center gap-3">
-                <img
-                    src="{{ asset('logo.jpg') }}"
-                    alt="Nvonchi Search"
-                    class="w-9 h-9 rounded-xl object-contain ring-1 ring-white/10 shadow-sm"
-                />
-                <div class="flex flex-col">
-                    <span class="text-base font-extrabold tracking-tight text-white leading-tight">NvonchiSearch</span>
-                    <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">Hub Opérationnel</span>
-                </div>
-            </a>
+        <div class="h-16 px-5 border-b border-slate-200 flex items-center justify-between">
+            <x-saasover.logo size="md" />
             <button
                 type="button"
                 @click="mobileSidebarOpen = false"
-                class="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+                class="p-2 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+                title="Fermer le menu"
             >
-                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <i class="fas fa-times text-sm"></i>
             </button>
         </div>
 
         <!-- Mobile Sidebar Scrollable Content -->
         <div class="flex-1 overflow-y-auto px-4 py-5 space-y-6">
-            <!-- Portal Status Badge -->
-            <div class="flex items-center gap-2 px-3 py-2 rounded-xl bg-zinc-900/80 border border-zinc-800/80 text-xs">
-                <span class="relative flex h-2 w-2">
-                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                </span>
-                <span class="text-zinc-300 font-medium">Base opérationnelle active</span>
-                <span class="ml-auto text-[10px] text-zinc-500 font-mono">v2.0</span>
+            <!-- Statut Portail Confiance -->
+            <div class="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#f1f4fa] border border-[#e2e8f4] text-xs">
+                <span class="size-2 rounded-full bg-[#081951]"></span>
+                <span class="text-[#081951] font-semibold">Portail Interne Confiance</span>
+                <span class="ml-auto text-[10px] text-slate-600 font-bold bg-white px-2 py-0.5 rounded border border-slate-200">Actif</span>
             </div>
 
-            <!-- Quick Metrics -->
+            <!-- Stats Mini Card -->
             <div class="grid grid-cols-2 gap-2">
-                <div class="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/70">
-                    <div class="text-lg font-bold text-white">{{ $totalTopicsCount }}</div>
-                    <div class="text-[11px] text-zinc-400">Thématiques</div>
+                <div class="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <div class="text-lg font-bold text-slate-900 font-display">{{ $totalTopicsCount }}</div>
+                    <div class="text-[11px] text-slate-500">Dossiers actifs</div>
                 </div>
-                <div class="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/70">
-                    <div class="text-lg font-bold text-indigo-400">{{ $totalOptionsCount }}</div>
-                    <div class="text-[11px] text-zinc-400">Procédures & Fiches</div>
+                <div class="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <div class="text-lg font-bold text-[#081951] font-display">{{ $totalOptionsCount }}</div>
+                    <div class="text-[11px] text-slate-500">Procédures</div>
                 </div>
             </div>
 
             <!-- Navigation Links -->
             <div class="space-y-1">
-                <div class="px-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">Navigation</div>
+                <div class="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">
+                    Navigation
+                </div>
+
                 <button
                     type="button"
                     wire:click="clearFilters"
                     @click="mobileSidebarOpen = false"
-                    class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all {{ empty($selectedTag) && empty($search) ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40 shadow-xs' : 'text-zinc-300 hover:text-white hover:bg-zinc-900' }}"
+                    class="w-full flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-semibold transition-all {{ empty($search) ? 'bg-[#081951] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' }}"
                 >
                     <span class="flex items-center gap-2.5">
-                        <svg class="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-                        </svg>
-                        <span>Toutes les rubriques</span>
+                        <i class="fas fa-layer-group text-xs"></i>
+                        <span>Tous les documents</span>
                     </span>
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400">{{ $totalTopicsCount }}</span>
+                    <span class="text-xs px-2 py-0.5 rounded-full {{ empty($search) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700' }}">{{ $totalTopicsCount }}</span>
                 </button>
 
                 <a
                     href="{{ route('about') }}"
-                    class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-900 transition-colors"
+                    class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
-                    <svg class="w-4 h-4 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
+                    <i class="fas fa-circle-info text-xs text-slate-400"></i>
                     <span>À propos du portail</span>
                 </a>
 
                 <a
                     href="{{ route('contact') }}"
-                    class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-900 transition-colors"
+                    class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
-                    <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                    </svg>
-                    <span>Support & Questions</span>
+                    <i class="fas fa-headset text-xs text-slate-400"></i>
+                    <span>Support & Référents</span>
                 </a>
 
                 <a
                     href="/admin"
-                    class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-900 transition-colors"
+                    class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
-                    <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    <span>Administration Filament</span>
+                    <i class="fas fa-cog text-xs text-slate-400"></i>
+                    <span>Administration des documents</span>
                 </a>
             </div>
 
-            <!-- Departments & Tags Filters -->
-            <div class="space-y-1">
-                <div class="flex items-center justify-between px-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                    <span>Pôles & Départements</span>
-                    @if(!empty($selectedTag))
+            <!-- Historique des Recherches (Mobile) -->
+            <div class="space-y-2 pt-2 border-t border-slate-200">
+                <div class="flex items-center justify-between px-2 pb-1">
+                    <div class="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+                        <i class="fas fa-clock-rotate-left text-slate-400 text-xs"></i>
+                        <span class="text-[10px] font-mono font-bold uppercase tracking-wider">Historique</span>
+                    </div>
+                    @if(!empty($searchHistory))
                         <button
                             type="button"
-                            wire:click="selectTag(null)"
-                            @click="mobileSidebarOpen = false"
-                            class="text-indigo-400 hover:text-indigo-300 normal-case"
+                            wire:click="clearHistory"
+                            class="text-slate-400 hover:text-slate-700 text-xs font-medium"
                         >
-                            Tout effacer
+                            Effacer
                         </button>
                     @endif
                 </div>
 
-                @foreach($popularTags as $tag)
-                    @php
-                        $isSelected = $selectedTag === $tag->slug;
-                    @endphp
-                    <button
-                        type="button"
-                        wire:click="selectTag('{{ $tag->slug }}')"
-                        @click="mobileSidebarOpen = false"
-                        class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all {{ $isSelected ? 'bg-indigo-600/25 text-indigo-200 border border-indigo-500/40 shadow-xs' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/80' }}"
-                    >
-                        <span class="flex items-center gap-2 truncate">
-                            <span class="w-1.5 h-1.5 rounded-full {{ $isSelected ? 'bg-indigo-400 ring-2 ring-indigo-400/30' : 'bg-zinc-600' }}"></span>
-                            <span class="truncate">#{{ $tag->name }}</span>
-                        </span>
-                        <span class="text-[10px] px-2 py-0.5 rounded-full {{ $isSelected ? 'bg-indigo-500/30 text-indigo-200' : 'bg-zinc-800/80 text-zinc-500' }}">
-                            {{ $tag->topics_count }}
-                        </span>
-                    </button>
-                @endforeach
+                @if(!empty($searchHistory))
+                    <div class="space-y-1">
+                        @foreach($searchHistory as $term)
+                            <div class="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 transition-colors">
+                                <button
+                                    type="button"
+                                    wire:click="applyHistory('{{ $term }}')"
+                                    @click="mobileSidebarOpen = false"
+                                    class="flex items-center gap-2 truncate text-left flex-1"
+                                >
+                                    <i class="fas fa-magnifying-glass text-slate-400 text-[10px]"></i>
+                                    <span class="truncate">{{ $term }}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    wire:click.stop="removeFromHistory('{{ $term }}')"
+                                    class="p-1 text-slate-300 hover:text-rose-500 transition-colors"
+                                    title="Supprimer"
+                                >
+                                    <i class="fas fa-times text-[10px]"></i>
+                                </button>
+                            </div>
+                        @endforeach
+                    </div>
+                @else
+                    <div class="px-3 py-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                        <p class="text-xs text-slate-500">Aucune recherche récente</p>
+                    </div>
+                @endif
             </div>
         </div>
     </aside>
 
     <!-- ============================================================== -->
-    <!-- DESKTOP LEFT SIDEBAR                                           -->
+    <!-- DESKTOP LEFT SIDEBAR (Épurée & Fluide)                         -->
     <!-- ============================================================== -->
-    <aside class="w-72 lg:w-80 shrink-0 hidden md:flex flex-col h-screen sticky top-0 bg-zinc-950/95 border-r border-zinc-800/80 z-30 backdrop-blur-2xl">
+    <aside class="w-72 lg:w-80 shrink-0 hidden md:flex flex-col h-screen sticky top-0 bg-white border-r border-slate-200 z-30 shadow-xs">
         <!-- Brand Header -->
-        <div class="h-16 px-6 border-b border-zinc-800/80 flex items-center justify-between">
-            <a href="{{ route('home') }}" class="flex items-center gap-3 group">
-                <img
-                    src="{{ asset('logo.jpg') }}"
-                    alt="Nvonchi Search"
-                    class="w-10 h-10 rounded-xl object-contain ring-1 ring-white/10 shadow-md group-hover:scale-105 transition-transform duration-200"
-                />
-                <div class="flex flex-col">
-                    <span class="text-base font-extrabold tracking-tight text-white leading-tight">NvonchiSearch</span>
-                    <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">Hub Opérationnel</span>
-                </div>
-            </a>
-            <span class="relative flex h-2 w-2" title="Système en ligne">
-                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
+        <div class="h-16 px-6 border-b border-slate-200 flex items-center justify-between">
+            <x-saasover.logo size="md" />
+            <span class="size-2 rounded-full bg-[#081951]" title="Portail interne opérationnel"></span>
         </div>
 
         <!-- Sidebar Body (Scrollable) -->
         <div class="flex-1 overflow-y-auto px-4 py-5 space-y-6">
-            <!-- Metrics Mini-Widget -->
-            <div class="p-3.5 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 shadow-xs space-y-3">
-                <div class="flex items-center justify-between text-xs text-zinc-400 font-medium">
-                    <span>Statut base documentaire</span>
-                    <span class="text-emerald-400 font-semibold text-[11px]">En direct</span>
+            <!-- Confiance Portal Info -->
+            <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+                <div class="flex items-center justify-between text-xs text-slate-600 font-medium">
+                    <span class="flex items-center gap-1.5 text-slate-900 font-semibold font-display">
+                        <i class="fas fa-folder-closed text-[#081951]"></i>
+                        <span>Portail Confiance</span>
+                    </span>
+                    <span class="text-[10px] font-bold text-[#081951] uppercase tracking-wider bg-[#f1f4fa] border border-[#e2e8f4] px-2 py-0.5 rounded-full">
+                        Certifié
+                    </span>
                 </div>
                 <div class="grid grid-cols-2 gap-2 text-center">
-                    <div class="p-2 rounded-xl bg-zinc-950/70 border border-zinc-800/60">
-                        <div class="text-base font-black text-white">{{ $totalTopicsCount }}</div>
-                        <div class="text-[10px] text-zinc-400 uppercase font-semibold">Thématiques</div>
+                    <div class="p-2 rounded-lg bg-white border border-slate-200">
+                        <div class="text-base font-bold text-slate-900 font-display">{{ $totalTopicsCount }}</div>
+                        <div class="text-[10px] text-slate-500 uppercase font-semibold">Dossiers</div>
                     </div>
-                    <div class="p-2 rounded-xl bg-zinc-950/70 border border-zinc-800/60">
-                        <div class="text-base font-black text-indigo-400">{{ $totalOptionsCount }}</div>
-                        <div class="text-[10px] text-zinc-400 uppercase font-semibold">Procédures</div>
+                    <div class="p-2 rounded-lg bg-white border border-slate-200">
+                        <div class="text-base font-bold text-[#081951] font-display">{{ $totalOptionsCount }}</div>
+                        <div class="text-[10px] text-slate-500 uppercase font-semibold">Procédures</div>
                     </div>
                 </div>
             </div>
 
             <!-- Navigation Links -->
             <div class="space-y-1">
-                <div class="px-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">Navigation Hub</div>
+                <div class="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">
+                    Navigation
+                </div>
 
                 <button
                     type="button"
                     wire:click="clearFilters"
-                    class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer {{ empty($selectedTag) && empty($search) ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40 shadow-xs' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/70' }}"
+                    class="w-full flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-semibold transition-all cursor-pointer {{ empty($search) ? 'bg-[#081951] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' }}"
                 >
                     <span class="flex items-center gap-2.5">
-                        <svg class="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-                        </svg>
-                        <span>Toutes les fiches</span>
+                        <i class="fas fa-layer-group text-xs"></i>
+                        <span>Tous les documents</span>
                     </span>
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-zinc-900 text-zinc-400 border border-zinc-800">{{ $totalTopicsCount }}</span>
+                    <span class="text-xs px-2 py-0.5 rounded-full {{ empty($search) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700' }}">{{ $totalTopicsCount }}</span>
                 </button>
 
                 <a
                     href="{{ route('about') }}"
-                    class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-900/70 transition-colors"
+                    class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
-                    <svg class="w-4 h-4 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
+                    <i class="fas fa-circle-info text-xs text-slate-400"></i>
                     <span>À propos du portail</span>
                 </a>
 
                 <a
                     href="{{ route('contact') }}"
-                    class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-900/70 transition-colors"
+                    class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
-                    <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                    </svg>
-                    <span>Support & Questions</span>
+                    <i class="fas fa-headset text-xs text-slate-400"></i>
+                    <span>Support & Référents</span>
                 </a>
 
                 <a
                     href="/admin"
-                    class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-900/70 transition-colors"
+                    class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
-                    <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    <span>Administration Filament</span>
+                    <i class="fas fa-cog text-xs text-slate-400"></i>
+                    <span>Administration des documents</span>
                 </a>
             </div>
 
-            <!-- Departments & Tags Filters -->
-            <div class="space-y-1">
-                <div class="flex items-center justify-between px-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                    <span>Pôles & Catégories</span>
-                    @if(!empty($selectedTag))
+            <!-- Historique des Recherches (Desktop Sidebar) -->
+            <div class="space-y-2 pt-2 border-t border-slate-200">
+                <div class="flex items-center justify-between px-2 pb-1">
+                    <div class="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+                        <i class="fas fa-clock-rotate-left text-slate-400 text-xs"></i>
+                        <span class="text-[10px] font-mono font-bold uppercase tracking-wider">Historique</span>
+                    </div>
+                    @if(!empty($searchHistory))
                         <button
                             type="button"
-                            wire:click="selectTag(null)"
-                            class="text-indigo-400 hover:text-indigo-300 normal-case cursor-pointer text-[11px]"
+                            wire:click="clearHistory"
+                            class="text-slate-400 hover:text-slate-700 text-xs font-medium cursor-pointer"
                         >
-                            Réinitialiser
+                            Effacer
                         </button>
                     @endif
                 </div>
 
-                @foreach($popularTags as $tag)
-                    @php
-                        $isSelected = $selectedTag === $tag->slug;
-                    @endphp
-                    <button
-                        type="button"
-                        wire:click="selectTag('{{ $tag->slug }}')"
-                        class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all cursor-pointer {{ $isSelected ? 'bg-indigo-600/25 text-indigo-200 border border-indigo-500/40 shadow-xs' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/80' }}"
-                    >
-                        <span class="flex items-center gap-2 truncate">
-                            <span class="w-1.5 h-1.5 rounded-full {{ $isSelected ? 'bg-indigo-400 ring-2 ring-indigo-400/30' : 'bg-zinc-600' }}"></span>
-                            <span class="truncate">#{{ $tag->name }}</span>
-                        </span>
-                        <span class="text-[10px] px-2 py-0.5 rounded-full {{ $isSelected ? 'bg-indigo-500/30 text-indigo-200 font-bold' : 'bg-zinc-800/80 text-zinc-500' }}">
-                            {{ $tag->topics_count }}
-                        </span>
-                    </button>
-                @endforeach
+                @if(!empty($searchHistory))
+                    <div class="space-y-1">
+                        @foreach($searchHistory as $term)
+                            <div class="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 transition-colors group">
+                                <button
+                                    type="button"
+                                    wire:click="applyHistory('{{ $term }}')"
+                                    class="flex items-center gap-2 truncate text-left flex-1 cursor-pointer"
+                                    title="Relancer cette recherche"
+                                >
+                                    <i class="fas fa-magnifying-glass text-slate-400 text-[10px] shrink-0"></i>
+                                    <span class="truncate">{{ $term }}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    wire:click.stop="removeFromHistory('{{ $term }}')"
+                                    class="p-0.5 text-slate-300 hover:text-rose-500 transition-colors cursor-pointer"
+                                    title="Supprimer de l'historique"
+                                >
+                                    <i class="fas fa-times text-[10px]"></i>
+                                </button>
+                            </div>
+                        @endforeach
+                    </div>
+                @else
+                    <div class="px-3.5 py-4 rounded-xl bg-slate-50 border border-slate-200 text-center">
+                        <i class="fas fa-clock text-slate-300 text-sm mb-1 block"></i>
+                        <p class="text-xs text-slate-600 font-medium">Aucune recherche récente</p>
+                        <p class="text-[10px] text-slate-400 mt-0.5">Vos recherches apparaîtront ici.</p>
+                    </div>
+                @endif
             </div>
         </div>
 
         <!-- Sidebar Footer -->
-        <div class="p-4 border-t border-zinc-800/80 bg-zinc-950/60">
-            <div class="flex items-center justify-between text-[11px] text-zinc-500">
-                <span>Raccourci recherche</span>
-                <kbd class="px-2 py-0.5 bg-zinc-900 border border-zinc-800 rounded font-mono text-zinc-400 text-[10px]">/</kbd>
-            </div>
-            <div class="mt-2 text-[10px] text-zinc-600 text-center">
-                &copy; {{ date('Y') }} NvonchiSearch &bull; Tous droits réservés
-            </div>
+        <div class="p-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500">
+            <span class="flex items-center gap-1.5">
+                <span class="size-2 rounded-full bg-[#081951]"></span>
+                <span>Raccourci</span>
+            </span>
+            <kbd class="px-2 py-0.5 bg-white border border-slate-200 rounded font-mono text-slate-600 text-[10px] shadow-2xs">/</kbd>
         </div>
     </aside>
 
     <!-- ============================================================== -->
     <!-- MAIN CONTENT AREA                                              -->
     <!-- ============================================================== -->
-    <main class="flex-1 min-w-0 flex flex-col min-h-screen bg-zinc-950">
+    <main class="flex-1 min-w-0 flex flex-col min-h-screen bg-transparent relative z-10">
         <!-- Top Sticky Header Bar -->
-        <header class="sticky top-0 z-20 backdrop-blur-xl bg-zinc-950/80 border-b border-zinc-800/80 px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between gap-3 sm:gap-6">
+        <header class="sticky top-0 z-20 backdrop-blur-md bg-white/95 border-b border-slate-200 px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-3 sm:gap-6">
             <!-- Mobile Toggle -->
             <button
                 type="button"
                 @click="mobileSidebarOpen = true"
-                class="md:hidden p-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                class="md:hidden p-2 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors shadow-2xs"
                 title="Ouvrir le menu latéral"
             >
-                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
+                <i class="fas fa-bars text-sm"></i>
             </button>
 
             <!-- Search Input Box -->
-            <div class="relative flex-1 max-w-2xl flex items-center bg-zinc-900/90 border border-zinc-800 rounded-2xl px-4 py-2 focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-500/20 shadow-lg shadow-black/20 transition-all">
+            <div class="relative flex-1 max-w-2xl flex items-center bg-white border border-slate-200 rounded-xl px-3.5 py-2 focus-within:border-[#081951] focus-within:ring-2 focus-within:ring-[#081951]/10 shadow-xs transition-all">
                 <!-- Search Icon -->
-                <div class="pr-2 flex items-center pointer-events-none text-zinc-400">
-                    <svg class="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                <div class="pr-2.5 flex items-center pointer-events-none text-[#081951]">
+                    <svg viewBox="0 0 20 20" fill="currentColor" class="size-4.5">
+                        <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
                     </svg>
                 </div>
 
@@ -544,34 +543,30 @@ new class extends Component
                     x-ref="searchInput"
                     type="text"
                     wire:model.live.debounce.250ms="search"
-                    placeholder="Rechercher une démarche (ex: congés, notes de frais, VPN, ticket IT...)"
-                    class="w-full bg-transparent text-sm sm:text-base text-zinc-100 placeholder-zinc-500 focus:outline-hidden"
+                    @keydown.enter="recordSearch"
+                    placeholder="Rechercher une démarche, un mot-clé ou un document (ex: télétravail, mutuelle, VPN...)"
+                    class="w-full bg-transparent text-sm sm:text-base text-slate-900 placeholder-slate-400 focus:outline-hidden font-sans"
                     autofocus
                 />
 
                 <!-- Controls inside input: Loading, Clear, Shortcut -->
                 <div class="flex items-center gap-2 pl-2">
                     <!-- Loading Indicator -->
-                    <div wire:loading wire:target="search, selectTag" class="text-indigo-400">
-                        <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
+                    <div wire:loading wire:target="search" class="text-[#081951]">
+                        <i class="fas fa-circle-notch fa-spin text-sm"></i>
                     </div>
 
-                    @if(!empty($search) || !empty($selectedTag))
+                    @if(!empty($search))
                         <button
                             type="button"
                             wire:click="clearFilters"
-                            class="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
-                            title="Effacer les filtres (Echap)"
+                            class="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                            title="Effacer la recherche (Echap)"
                         >
-                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
+                            <i class="fas fa-times text-xs"></i>
                         </button>
                     @else
-                        <kbd class="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 bg-zinc-800 rounded border border-zinc-700">
+                        <kbd class="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono text-slate-400 bg-slate-50 rounded border border-slate-200">
                             /
                         </kbd>
                     @endif
@@ -579,91 +574,185 @@ new class extends Component
             </div>
 
             <!-- Top Right Action Controls -->
-            <div class="flex items-center gap-2 sm:gap-3">
+            <div class="flex items-center gap-2">
                 <a
                     href="/admin"
-                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 hover:border-zinc-700 transition-colors shadow-2xs"
-                    title="Administration"
+                    class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-[#081951] hover:bg-[#0e2454] text-white transition-all shadow-xs"
+                    title="Administration documentaire"
                 >
-                    <svg class="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    <span class="hidden sm:inline">Admin</span>
+                    <i class="fas fa-folder-gear text-xs"></i>
+                    <span class="hidden sm:inline">Administration</span>
                 </a>
             </div>
         </header>
 
         <!-- Main Body Flow -->
         <div class="flex-1 px-4 sm:px-6 lg:px-8 py-6 max-w-6xl w-full mx-auto space-y-6">
-            <!-- Compact Dark Hero Banner -->
-            <div class="relative overflow-hidden rounded-3xl bg-gradient-to-r from-zinc-900 via-zinc-900/90 to-indigo-950/40 border border-zinc-800/80 p-6 sm:p-8 shadow-xl">
-                <div class="relative z-10 max-w-2xl">
-                    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-semibold mb-3">
-                        <span class="flex h-1.5 w-1.5 rounded-full bg-indigo-400"></span>
-                        <span>Portail Interne &bull; Démarches & Fiches</span>
+            <!-- Hero Section Dédiée à l'Entreprise Confiance -->
+            <div class="rounded-2xl bg-white border border-slate-200 p-6 sm:p-8 shadow-xs">
+                <div class="max-w-3xl">
+                    <!-- Eyebrow Badges -->
+                    <div class="flex flex-wrap items-center gap-2 mb-3">
+                        <x-saasover.verified-badge text="Base Documentaire & Procédures Officielles" />
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            Entreprise Confiance
+                        </span>
                     </div>
-                    <h1 class="text-2xl sm:text-3xl lg:text-4xl font-black text-white tracking-tight leading-tight">
-                        La documentation opérationnelle, <br />
-                        <span class="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-sky-400 to-emerald-400">instantanée et centralisée</span>
-                    </h1>
-                    <p class="mt-2.5 text-sm sm:text-base text-zinc-400 leading-relaxed">
-                        Trouvez en quelques secondes vos modes opératoires d’équipe, guides RH, outils informatiques et formulaires officiels.
-                    </p>
-                </div>
 
-                <!-- Ambient Glow Background Decor -->
-                <div class="absolute -right-20 -top-20 w-80 h-80 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none"></div>
-                <div class="absolute -right-10 -bottom-10 w-60 h-60 bg-sky-600/10 rounded-full blur-2xl pointer-events-none"></div>
+                    <!-- Hero Title -->
+                    <h1 class="text-2xl sm:text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight leading-tight font-display">
+                        Documentation & procédures internes <br class="hidden sm:inline" />
+                        <span class="text-[#081951]">Entreprise Confiance</span>
+                    </h1>
+
+                    <p class="mt-3 text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
+                        Recherchez instantanément parmi l'ensemble des directives, modes opératoires validés, guides RH, protocoles IT et démarches de l'entreprise. <strong class="text-slate-900 font-semibold">{{ $totalOptionsCount }} procédures vérifiées</strong> actuellement indexées.
+                    </p>
+
+                    <!-- Trust Chips -->
+                    <div class="mt-5 flex flex-wrap items-center gap-2 text-xs">
+                        <x-saasover.hero-float
+                            title="Recherche Instantanée"
+                            subtitle="Plein texte dans les documents"
+                        />
+                        <x-saasover.hero-float
+                            title="Documents Certifiés"
+                            subtitle="Validés par les directions métiers"
+                        />
+                        <x-saasover.hero-float
+                            title="Accès Direct"
+                            subtitle="Liens rapides vers les applications"
+                        />
+                    </div>
+                </div>
             </div>
 
-            <!-- Horizontal Quick Tags Bar -->
-            @if($popularTags->isNotEmpty())
-                <div class="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
-                    <span class="text-xs font-semibold text-zinc-500 shrink-0 mr-1">Filtres rapides :</span>
+            <!-- Metrics Strip -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
+                    <div class="flex items-center justify-between text-slate-500 text-xs mb-1">
+                        <span>Dossiers</span>
+                        <i class="fas fa-folder-closed text-[#081951] text-xs"></i>
+                    </div>
+                    <div class="text-xl font-bold text-slate-900 font-display">{{ $totalTopicsCount }}</div>
+                    <div class="text-[10px] text-slate-500 mt-0.5 font-medium">Indexés dans la base</div>
+                </div>
 
-                    <button
-                        type="button"
-                        wire:click="clearFilters"
-                        class="shrink-0 px-3 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer {{ empty($selectedTag) ? 'bg-indigo-600 text-white shadow-xs' : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800' }}"
-                    >
-                        Tous les pôles ({{ $totalTopicsCount }})
-                    </button>
+                <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
+                    <div class="flex items-center justify-between text-slate-500 text-xs mb-1">
+                        <span>Procédures</span>
+                        <i class="fas fa-file-lines text-[#081951] text-xs"></i>
+                    </div>
+                    <div class="text-xl font-bold text-[#081951] font-display">{{ $totalOptionsCount }}</div>
+                    <div class="text-[10px] text-slate-500 mt-0.5">Modes opératoires</div>
+                </div>
 
-                    @foreach($popularTags as $tag)
-                        @php
-                            $isSelected = $selectedTag === $tag->slug;
-                        @endphp
+                <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
+                    <div class="flex items-center justify-between text-slate-500 text-xs mb-1">
+                        <span>Vélocité</span>
+                        <i class="fas fa-bolt text-slate-400 text-xs"></i>
+                    </div>
+                    <div class="text-xl font-bold text-slate-900 font-display">&lt; 80ms</div>
+                    <div class="text-[10px] text-slate-500 mt-0.5 font-medium">Recherche plein texte</div>
+                </div>
+
+                <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
+                    <div class="flex items-center justify-between text-slate-500 text-xs mb-1">
+                        <span>Directions</span>
+                        <i class="fas fa-sitemap text-[#081951] text-xs"></i>
+                    </div>
+                    <div class="text-xl font-bold text-slate-900 font-display">100%</div>
+                    <div class="text-[10px] text-slate-500 mt-0.5">RH, IT, Finance & Opérations</div>
+                </div>
+            </div>
+
+            <!-- ============================================================== -->
+            <!-- SECTION HISTORIQUE DE RECHERCHE                                -->
+            <!-- ============================================================== -->
+            <div class="space-y-2">
+                <div class="flex items-center justify-between text-xs text-slate-500">
+                    <div class="flex items-center gap-1.5">
+                        <i class="fas fa-clock-rotate-left text-slate-400 text-xs"></i>
+                        <span class="font-mono text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+                            @if(!empty($searchHistory))
+                                VOS RECHERCHES RÉCENTES
+                            @else
+                                RECHERCHES SUGGÉRÉES
+                            @endif
+                        </span>
+                    </div>
+
+                    @if(!empty($searchHistory))
                         <button
                             type="button"
-                            wire:click="selectTag('{{ $tag->slug }}')"
-                            class="shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer {{ $isSelected ? 'bg-indigo-600 text-white shadow-xs ring-2 ring-indigo-500/20' : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-800/80' }}"
+                            wire:click="clearHistory"
+                            class="text-slate-400 hover:text-slate-700 text-xs font-medium cursor-pointer flex items-center gap-1"
                         >
-                            <span>#{{ $tag->name }}</span>
-                            <span class="px-1.5 py-0.2 rounded-full text-[10px] {{ $isSelected ? 'bg-indigo-700 text-white' : 'bg-zinc-800 text-zinc-500' }}">
-                                {{ $tag->topics_count }}
-                            </span>
+                            <i class="fas fa-trash-can text-[10px]"></i>
+                            <span>Vider l'historique</span>
                         </button>
-                    @endforeach
+                    @endif
                 </div>
-            @endif
+
+                <div class="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+                    @if(!empty($searchHistory))
+                        @foreach($searchHistory as $term)
+                            <div class="shrink-0 group flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 shadow-2xs transition-colors">
+                                <button
+                                    type="button"
+                                    wire:click="applyHistory('{{ $term }}')"
+                                    class="flex items-center gap-1.5 cursor-pointer"
+                                    title="Relancer la recherche « {{ $term }} »"
+                                >
+                                    <i class="fas fa-magnifying-glass text-slate-400 text-[10px]"></i>
+                                    <span>{{ $term }}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    wire:click.stop="removeFromHistory('{{ $term }}')"
+                                    class="p-0.5 text-slate-300 hover:text-rose-500 transition-colors cursor-pointer"
+                                    title="Supprimer"
+                                >
+                                    <i class="fas fa-times text-[10px]"></i>
+                                </button>
+                            </div>
+                        @endforeach
+                    @else
+                        @php
+                            $suggestions = [
+                                'Télétravail',
+                                'Notes de frais',
+                                'Congés payés',
+                                'VPN & Réseau',
+                                'Mutuelle santé',
+                                'Procédure achat',
+                                'Onboarding'
+                            ];
+                        @endphp
+                        @foreach($suggestions as $suggested)
+                            <button
+                                type="button"
+                                wire:click="applyHistory('{{ $suggested }}')"
+                                class="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 hover:text-[#081951] shadow-2xs transition-colors cursor-pointer"
+                            >
+                                <i class="fas fa-magnifying-glass text-slate-400 text-[10px]"></i>
+                                <span>{{ $suggested }}</span>
+                            </button>
+                        @endforeach
+                    @endif
+                </div>
+            </div>
 
             <!-- Active Results Bar & Client-side Accordion Actions -->
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs sm:text-sm text-zinc-400 pt-1 border-t border-zinc-850">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-500 pt-2 border-t border-slate-200">
                 <div class="flex items-center gap-2">
-                    @if(!empty($search) || !empty($selectedTag))
+                    @if(!empty($search))
                         <span>
-                            <strong class="text-white">{{ $topics->count() }}</strong> rubrique(s) trouvée(s)
-                            @if(!empty($search))
-                                pour « <strong class="text-indigo-400">{{ $search }}</strong> »
-                            @endif
-                            @if(!empty($selectedTag))
-                                dans le pôle <strong class="text-indigo-400">#{{ $selectedTag }}</strong>
-                            @endif
+                            <strong class="text-slate-900">{{ $topics->count() }}</strong> dossier(s) trouvé(s) pour « <strong class="text-[#081951]">{{ $search }}</strong> »
                         </span>
                     @else
                         <span>
-                            Affichage des <strong class="text-white">{{ $topics->count() }}</strong> rubriques opérationnelles
+                            Affichage des <strong class="text-slate-900">{{ $topics->count() }}</strong> dossiers documentaires
                         </span>
                     @endif
                 </div>
@@ -673,101 +762,70 @@ new class extends Component
                         <button
                             type="button"
                             @click="expandAll([{{ $topics->pluck('id')->implode(',') }}])"
-                            class="text-xs font-semibold text-zinc-400 hover:text-indigo-300 transition-colors cursor-pointer"
+                            class="text-xs font-medium text-slate-600 hover:text-[#081951] transition-colors cursor-pointer"
                         >
                             Tout déplier
                         </button>
-                        <span class="text-zinc-700">|</span>
+                        <span class="text-slate-300">|</span>
                         <button
                             type="button"
                             @click="collapseAll()"
-                            class="text-xs font-semibold text-zinc-400 hover:text-indigo-300 transition-colors cursor-pointer"
+                            class="text-xs font-medium text-slate-600 hover:text-[#081951] transition-colors cursor-pointer"
                         >
                             Tout replier
                         </button>
                     @endif
 
-                    @if(!empty($search) || !empty($selectedTag))
-                        <span class="text-zinc-700">|</span>
+                    @if(!empty($search))
+                        <span class="text-slate-300">|</span>
                         <button
                             type="button"
                             wire:click="clearFilters"
-                            class="text-xs font-semibold text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                            class="text-xs font-medium text-rose-600 hover:text-rose-700 hover:underline cursor-pointer"
                         >
-                            Effacer les filtres
+                            Effacer la recherche
                         </button>
                     @endif
                 </div>
             </div>
 
             <!-- Topics & Procedures Cards List -->
-            <div class="space-y-4">
+            <div class="space-y-3.5">
                 @forelse($topics as $topic)
                     <div
                         data-topic-id="{{ $topic->id }}"
                         id="procedure-{{ $topic->id }}"
-                        class="bg-zinc-900/60 hover:bg-zinc-900/90 border border-zinc-800/80 hover:border-zinc-700/80 rounded-2xl transition-all duration-200 overflow-hidden shadow-lg shadow-black/10 backdrop-blur-sm"
+                        class="bg-white rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition-all duration-150 overflow-hidden"
                     >
                         <!-- Topic Header (Accordion Trigger) -->
                         <div
                             @click="toggleTopic({{ $topic->id }})"
-                            class="p-5 sm:p-6 cursor-pointer flex items-start justify-between gap-4 select-none hover:bg-zinc-800/30 transition-colors"
+                            class="p-4 sm:p-5 cursor-pointer flex items-start justify-between gap-4 select-none hover:bg-slate-50/60 transition-colors"
                         >
-                            <div class="flex items-start gap-4">
-                                <!-- Topic Icon Container with Subtle Neon Glow -->
-                                <div class="shrink-0 w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 flex items-center justify-center shadow-xs">
-                                    @if($topic->icon === 'academic-cap')
-                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                                        </svg>
-                                    @elseif($topic->icon === 'banknotes')
-                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                    @elseif($topic->icon === 'calendar')
-                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                        </svg>
-                                    @elseif($topic->icon === 'compass')
-                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                                        </svg>
-                                    @else
-                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                                        </svg>
-                                    @endif
+                            <div class="flex items-start gap-3.5">
+                                <!-- Confiance Mark Icon -->
+                                <div class="shrink-0 flex flex-col items-center gap-1">
+                                    <x-saasover.mark size="size-9" />
+                                    <span class="text-[10px] font-mono text-slate-400">
+                                        #{{ str_pad($topic->id, 2, '0', STR_PAD_LEFT) }}
+                                    </span>
                                 </div>
 
                                 <div>
                                     <div class="flex flex-wrap items-center gap-2 mb-1">
-                                        <h2 class="text-base sm:text-lg font-bold text-white">
+                                        <h2 class="text-base font-bold text-slate-900 font-display">
                                             {!! $this->highlightText($topic->title) !!}
                                         </h2>
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-zinc-800 text-zinc-300 border border-zinc-700/60">
+                                        <x-saasover.verified-badge compact="true" text="Document validé Confiance" />
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
                                             {{ $topic->options->count() }} démarche(s)
                                         </span>
                                     </div>
 
                                     @if($topic->description)
-                                        <p class="text-xs sm:text-sm text-zinc-400 leading-relaxed">
+                                        <p class="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
                                             {!! $this->highlightText($topic->description) !!}
                                         </p>
-                                    @endif
-
-                                    <!-- Tags Pill Row -->
-                                    @if($topic->tags->isNotEmpty())
-                                        <div class="mt-2.5 flex flex-wrap gap-1.5">
-                                            @foreach($topic->tags as $t)
-                                                <button
-                                                    type="button"
-                                                    wire:click.stop="selectTag('{{ $t->slug }}')"
-                                                    class="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors cursor-pointer {{ $selectedTag === $t->slug ? 'bg-indigo-600 text-white' : 'bg-zinc-800/80 text-zinc-300 hover:bg-indigo-950/60 hover:text-indigo-300 border border-zinc-700/60' }}"
-                                                >
-                                                    #{!! $this->highlightText($t->name) !!}
-                                                </button>
-                                            @endforeach
-                                        </div>
                                     @endif
                                 </div>
                             </div>
@@ -777,170 +835,151 @@ new class extends Component
                                 <button
                                     type="button"
                                     @click.stop="copyTopicLink({{ $topic->id }})"
-                                    class="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
-                                    title="Copier le lien direct vers cette fiche"
+                                    class="p-1.5 rounded-lg text-slate-400 hover:text-[#081951] hover:bg-slate-100 transition-colors cursor-pointer"
+                                    title="Copier le lien direct vers ce document"
                                 >
                                     <template x-if="copiedTopicId === {{ $topic->id }}">
-                                        <span class="text-[11px] font-semibold text-emerald-400">Copié !</span>
+                                        <span class="text-[11px] font-bold text-[#081951]">Lien copié !</span>
                                     </template>
                                     <template x-if="copiedTopicId !== {{ $topic->id }}">
-                                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                                        </svg>
+                                        <i class="fas fa-link text-xs"></i>
                                     </template>
                                 </button>
 
-                                <div class="text-zinc-500">
-                                    <svg
-                                        class="w-5 h-5 transform transition-transform duration-200"
-                                        :class="isTopicOpen({{ $topic->id }}) ? 'rotate-180' : ''"
-                                        fill="none"
-                                        viewBox="0 0 24 24"
-                                        stroke="currentColor"
-                                    >
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                                    </svg>
+                                <div class="text-slate-400">
+                                    <i
+                                        class="fas fa-chevron-down text-xs transform transition-transform duration-200"
+                                        :class="isTopicOpen({{ $topic->id }}) ? 'rotate-180 text-[#081951]' : 'text-slate-400'"
+                                    ></i>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Accordion Expansion: Detailed Procedures & Options -->
+                        <!-- Accordion Expansion: Detailed Procedures & Documents -->
                         <div
                             x-show="isTopicOpen({{ $topic->id }})"
-                            x-transition:enter="transition ease-out duration-200"
+                            x-transition:enter="transition ease-out duration-150"
                             x-transition:enter-start="opacity-0 -translate-y-1"
                             x-transition:enter-end="opacity-100 translate-y-0"
-                            x-transition:leave="transition ease-in duration-150"
+                            x-transition:leave="transition ease-in duration-100"
                             x-transition:leave-start="opacity-100 translate-y-0"
                             x-transition:leave-end="opacity-0 -translate-y-1"
-                            class="border-t border-zinc-800/80 bg-zinc-950/60 p-4 sm:p-6 space-y-3.5"
+                            class="border-t border-slate-100 bg-[#f8fafc] p-4 sm:p-5 space-y-3"
                         >
                             @forelse($topic->options as $option)
-                                <div class="bg-zinc-900/90 rounded-xl p-4 sm:p-5 border border-zinc-800/80 hover:border-zinc-700/80 transition-all shadow-xs">
+                                <div class="bg-white rounded-lg p-4 border border-slate-200 shadow-2xs">
                                     <div class="flex items-start justify-between gap-3 mb-2">
-                                        <h3 class="text-sm sm:text-base font-semibold text-zinc-100 flex items-center gap-2">
-                                            @if($option->type === 'faq')
-                                                <span class="shrink-0 w-2 h-2 rounded-full bg-indigo-400"></span>
-                                            @elseif($option->type === 'link')
-                                                <span class="shrink-0 w-2 h-2 rounded-full bg-sky-400"></span>
-                                            @elseif($option->type === 'download')
-                                                <span class="shrink-0 w-2 h-2 rounded-full bg-emerald-400"></span>
-                                            @elseif($option->type === 'contact')
-                                                <span class="shrink-0 w-2 h-2 rounded-full bg-amber-400"></span>
-                                            @endif
+                                        <h3 class="text-sm font-bold text-slate-900 flex items-center gap-2 font-display">
+                                            <span class="shrink-0 size-2 rounded-full bg-[#081951]"></span>
                                             <span>{!! $this->highlightText($option->title) !!}</span>
                                         </h3>
 
-                                        <span class="shrink-0 inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider {{ match($option->type) {
-                                            'faq' => 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/30',
-                                            'link' => 'bg-sky-500/10 text-sky-300 border border-sky-500/30',
-                                            'download' => 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30',
-                                            'contact' => 'bg-amber-500/10 text-amber-300 border border-amber-500/30',
-                                            default => 'bg-zinc-800 text-zinc-300',
-                                        } }}">
+                                        <span class="shrink-0 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-slate-100 text-slate-700 border border-slate-200">
                                             {{ match($option->type) {
-                                                'faq' => 'Procédure Interne',
-                                                'link' => 'Outil / Plateforme',
-                                                'download' => 'Modèle / Document',
-                                                'contact' => 'Assistance Dédiée',
+                                                'faq' => 'Procédure Officielle',
+                                                'link' => 'Outil / Service Métier',
+                                                'download' => 'Document à télécharger',
+                                                'contact' => 'Référent Interne',
                                                 default => $option->type,
                                             } }}
                                         </span>
                                     </div>
 
                                     @if($option->content)
-                                        <div class="text-xs sm:text-sm text-zinc-400 leading-relaxed space-y-1.5">
+                                        <div class="text-xs sm:text-sm text-slate-600 leading-relaxed space-y-1.5 font-sans">
                                             {!! nl2br($this->highlightText($option->content)) !!}
                                         </div>
                                     @endif
 
                                     @if($option->action_url)
-                                        <div class="mt-3.5 pt-3 border-t border-zinc-800 flex items-center justify-end">
+                                        <div class="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
                                             <a
                                                 href="{{ $option->action_url }}"
                                                 target="_blank"
                                                 rel="noopener noreferrer"
-                                                class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 transition-colors shadow-2xs"
+                                                class="group inline-flex items-center gap-1.5 bg-[#081951] hover:bg-[#0e2454] text-white font-medium px-3.5 py-1.5 rounded-lg text-xs transition-colors shadow-2xs"
                                             >
                                                 @if($option->type === 'download')
-                                                    <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                                    </svg>
-                                                    <span>Télécharger le document modèle</span>
+                                                    <i class="fas fa-download text-xs"></i>
+                                                    <span>Télécharger le document</span>
                                                 @elseif($option->type === 'contact')
-                                                    <svg class="w-3.5 h-3.5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                                                    </svg>
-                                                    <span>Appeler le poste interne</span>
+                                                    <i class="fas fa-phone text-xs"></i>
+                                                    <span>Joindre le référent</span>
                                                 @else
-                                                    <span>Accéder à l’outil interne</span>
-                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                                    </svg>
+                                                    <span>Accéder à l'application</span>
+                                                    <i class="fas fa-arrow-right text-xs group-hover:translate-x-0.5 transition-transform"></i>
                                                 @endif
                                             </a>
                                         </div>
                                     @endif
                                 </div>
                             @empty
-                                <p class="text-xs text-zinc-500 italic py-2">
-                                    Aucune démarche détaillée n’est encore renseignée pour cette thématique.
+                                <p class="text-xs text-slate-400 italic py-2">
+                                    Aucun texte ou document détaillé n’est encore renseigné pour cette thématique.
                                 </p>
                             @endforelse
                         </div>
                     </div>
                 @empty
-                    <!-- Dark Empty State -->
-                    <div class="bg-zinc-900/60 rounded-3xl border border-zinc-800 p-8 sm:p-12 text-center max-w-lg mx-auto shadow-xl">
-                        <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex items-center justify-center">
-                            <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
+                    <!-- Empty State -->
+                    <div class="bg-white rounded-2xl border border-slate-200 p-8 sm:p-12 text-center max-w-lg mx-auto shadow-xs">
+                        <div class="size-12 mx-auto mb-3 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center text-xl">
+                            <i class="fas fa-magnifying-glass"></i>
                         </div>
-                        <h3 class="text-lg font-bold text-white">Aucune procédure trouvée</h3>
-                        <p class="mt-2 text-xs sm:text-sm text-zinc-400 leading-relaxed">
-                            Aucun document ne correspond à vos critères « <span class="font-semibold text-indigo-300">{{ $search ?: $selectedTag }}</span> ».
+                        <h3 class="text-base font-bold text-slate-900 font-display">Aucun document correspondant</h3>
+                        <p class="mt-1.5 text-xs text-slate-500 leading-relaxed font-sans">
+                            Aucun document ou texte ne contient le terme « <span class="font-semibold text-[#081951]">{{ $search }}</span> ». Essayez avec un mot-clé plus général.
                         </p>
-                        <div class="mt-6 flex flex-wrap justify-center gap-3">
+                        <div class="mt-5 flex justify-center">
                             <button
                                 type="button"
                                 wire:click="clearFilters"
-                                class="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shadow-xs cursor-pointer"
+                                class="px-4 py-2 rounded-xl text-xs font-semibold bg-[#081951] text-white hover:bg-[#0e2454] transition-colors shadow-xs cursor-pointer"
                             >
-                                Réinitialiser les filtres
+                                Réinitialiser la recherche
                             </button>
                         </div>
                     </div>
                 @endforelse
             </div>
 
-            <!-- Knowledge Base Contribution Card -->
-            <div class="mt-10 rounded-2xl bg-gradient-to-r from-zinc-900 to-indigo-950/40 border border-zinc-800/80 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-                <div>
-                    <h4 class="text-sm font-bold text-white">Une procédure manque ou est obsolète ?</h4>
-                    <p class="text-xs text-zinc-400 mt-0.5">Les référents et équipes habilitées peuvent publier ou mettre à jour des fiches directement depuis l'espace d'administration.</p>
+            <!-- Call To Action Banner -->
+            <div class="rounded-2xl bg-[#081951] p-6 sm:p-8 text-white text-center shadow-xs">
+                <h2 class="text-xl sm:text-2xl font-bold mb-2 font-display">
+                    Un document manque ou doit être actualisé ?
+                </h2>
+                <p class="text-slate-300 text-xs sm:text-sm max-w-xl mx-auto mb-6 leading-relaxed font-sans">
+                    Les référents de pôle et gestionnaires documentaires de l'entreprise Confiance peuvent actualiser les modes opératoires et ajouter des documents directement depuis le panneau d'administration.
+                </p>
+                <div class="flex flex-wrap justify-center gap-3">
+                    <a
+                        href="/admin/topics"
+                        class="bg-white text-[#081951] hover:bg-slate-100 font-bold px-5 py-2 rounded-xl transition-colors shadow-xs inline-flex items-center gap-2 text-xs sm:text-sm"
+                    >
+                        <i class="fas fa-plus text-xs"></i>
+                        <span>Gérer les documents</span>
+                    </a>
+                    <a
+                        href="{{ route('contact') }}"
+                        class="bg-[#0e2454] hover:bg-[#143673] border border-slate-600 text-white font-semibold px-5 py-2 rounded-xl transition-colors inline-flex items-center gap-2 text-xs sm:text-sm"
+                    >
+                        <i class="fas fa-paper-plane text-xs"></i>
+                        <span>Signaler une mise à jour</span>
+                    </a>
                 </div>
-                <a
-                    href="/admin/topics"
-                    class="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors shadow-xs"
-                >
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                    </svg>
-                    <span>Ajouter une procédure</span>
-                </a>
             </div>
 
-            <!-- Content Area Minimal Footer -->
-            <footer class="pt-8 pb-10 border-t border-zinc-900 text-xs text-zinc-500 flex flex-col sm:flex-row items-center justify-between gap-4">
-                <div>
-                    <span>NvonchiSearch &bull; Base Opérationnelle Collaborateurs</span>
+            <!-- Footer -->
+            <footer class="pt-6 pb-6 border-t border-slate-200 text-xs text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div class="flex items-center gap-3">
+                    <x-saasover.mark size="size-5" />
+                    <span>&copy; {{ date('Y') }} Entreprise Confiance &bull; NvonchiSearch &bull; Base documentaire et procédures internes</span>
                 </div>
-                <div class="flex items-center gap-4">
-                    <a href="{{ route('home') }}" class="hover:text-indigo-400 transition-colors">Accueil</a>
-                    <a href="{{ route('about') }}" class="hover:text-indigo-400 transition-colors">À propos</a>
-                    <a href="{{ route('contact') }}" class="hover:text-indigo-400 transition-colors">Contact</a>
-                    <a href="/admin" class="hover:text-indigo-400 transition-colors">Administration</a>
+                <div class="flex items-center gap-5 font-medium text-slate-600">
+                    <a href="{{ route('home') }}" class="hover:text-[#081951] transition-colors">Accueil</a>
+                    <a href="{{ route('about') }}" class="hover:text-[#081951] transition-colors">À propos</a>
+                    <a href="{{ route('contact') }}" class="hover:text-[#081951] transition-colors">Contact Support</a>
+                    <a href="/admin" class="hover:text-[#081951] transition-colors">Administration</a>
                 </div>
             </footer>
         </div>

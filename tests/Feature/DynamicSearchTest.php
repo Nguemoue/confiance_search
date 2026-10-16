@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Models\Tag;
 use App\Models\Topic;
 use App\Models\TopicOption;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -74,18 +73,50 @@ class DynamicSearchTest extends TestCase
             ->assertDontSee('Frais de Scolarité');
     }
 
-    public function test_can_filter_by_tag(): void
+    public function test_search_query_is_recorded_in_history(): void
     {
-        $tag = Tag::factory()->create(['name' => 'Primaire', 'slug' => 'primaire']);
+        Livewire::test('dynamic-search')
+            ->set('search', 'Télétravail')
+            ->assertSet('searchHistory', ['Télétravail']);
 
-        $topicA = Topic::factory()->create(['title' => 'École Maternelle et Primaire']);
-        $topicA->tags()->attach($tag);
+        $this->assertEquals(['Télétravail'], session('search_history'));
+    }
 
-        $topicB = Topic::factory()->create(['title' => 'Université Master']);
+    public function test_can_apply_search_from_history(): void
+    {
+        Topic::factory()->create(['title' => 'Guide de Télétravail et Matériel']);
+        Topic::factory()->create(['title' => 'Politique des Congés Annuels']);
+
+        session(['search_history' => ['Télétravail']]);
 
         Livewire::test('dynamic-search')
-            ->set('selectedTag', 'primaire')
-            ->assertSee('École Maternelle et Primaire')
-            ->assertDontSee('Université Master');
+            ->assertSee('Télétravail')
+            ->call('applyHistory', 'Télétravail')
+            ->assertSet('search', 'Télétravail')
+            ->assertSeeHtml('Guide de <mark')
+            ->assertSee('Matériel')
+            ->assertDontSee('Politique des Congés Annuels');
+    }
+
+    public function test_can_remove_item_from_search_history(): void
+    {
+        session(['search_history' => ['Télétravail', 'Mutuelle']]);
+
+        Livewire::test('dynamic-search')
+            ->call('removeFromHistory', 'Télétravail')
+            ->assertSet('searchHistory', ['Mutuelle']);
+
+        $this->assertEquals(['Mutuelle'], session('search_history'));
+    }
+
+    public function test_can_clear_all_search_history(): void
+    {
+        session(['search_history' => ['Télétravail', 'Mutuelle', 'Congés']]);
+
+        Livewire::test('dynamic-search')
+            ->call('clearHistory')
+            ->assertSet('searchHistory', []);
+
+        $this->assertEquals([], session('search_history'));
     }
 }

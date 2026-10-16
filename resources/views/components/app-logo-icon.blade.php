@@ -1,1 +1,1 @@
-<img src="{{ asset('logo.jpg') }}" alt="Logo" {{ $attributes->merge(['class' => 'rounded-md object-contain']) }} />
+<x-saasover.mark size="size-7" {{ $attributes }} />

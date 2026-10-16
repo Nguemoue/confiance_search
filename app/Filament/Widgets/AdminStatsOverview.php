@@ -3,7 +3,6 @@
 namespace App\Filament\Widgets;
 
 use App\Models\ContactMessage;
-use App\Models\Tag;
 use App\Models\Topic;
 use App\Models\TopicOption;
 use Filament\Widgets\StatsOverviewWidget;
@@ -18,7 +17,7 @@ class AdminStatsOverview extends StatsOverviewWidget
         $totalTopics = Topic::count();
         $publishedTopics = Topic::where('is_published', true)->count();
         $totalOptions = TopicOption::count();
-        $totalTags = Tag::count();
+        $publishedOptions = TopicOption::where('is_published', true)->count();
         $unreadMessages = ContactMessage::where('is_read', false)->count();
 
         return [
@@ -29,15 +28,10 @@ class AdminStatsOverview extends StatsOverviewWidget
                 ->chart([3, 5, 6, 8, 10, $totalTopics]),
 
             Stat::make('Procédures & Fiches', $totalOptions)
-                ->description('Modes opératoires actifs')
+                ->description("{$publishedOptions} actives et vérifiées")
                 ->descriptionIcon('heroicon-m-document-text')
                 ->color('info')
                 ->chart([5, 8, 12, 15, $totalOptions]),
-
-            Stat::make('Pôles & Catégories', $totalTags)
-                ->description('Départements couverts')
-                ->descriptionIcon('heroicon-m-tag')
-                ->color('success'),
 
             Stat::make('Demandes Collaborateurs', $unreadMessages)
                 ->description($unreadMessages > 0 ? "{$unreadMessages} non traitée(s)" : 'Toutes les demandes traitées')
