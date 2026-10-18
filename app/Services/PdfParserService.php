@@ -33,7 +33,8 @@ class PdfParserService
         $document->sections()->delete();
 
         $order = 1;
-        $currentSectionTitle = 'Introduction / Généralités';
+        $currentSectionTitle = $document->language === 'en' ? 'General Overview' : 'Introduction / Généralités';
+        $docRef = $document->reference_code ?: ('DOC-'.$document->id);
 
         foreach ($pages as $index => $page) {
             $pageNumber = $index + 1;
@@ -54,19 +55,22 @@ class PdfParserService
                 }
 
                 // Check if this paragraph starts with a structural heading
-                // e.g. "Chapitre X", "Section Y", "Article Z", "Titre 1", "I -", "1.1", etc.
-                if (preg_match('/^(chapitre|section|article|titre|partie|annexe|[IVXLCDM]+\s*[-–.]|[0-9]+\.[0-9]*)\s*[:–-]?\s*(.*)$/iu', $cleanParagraph, $matches)) {
-                    // Extract a meaningful section title
+                // e.g. "Chapitre X", "Section Y", "Article Z", "Chapter A", "Part 1", etc.
+                if (preg_match('/^(chapitre|chapter|section|article|titre|title|partie|part|annexe|appendix|[IVXLCDM]+\s*[-–.]|[0-9]+\.[0-9]*)\s*[:–-]?\s*(.*)$/iu', $cleanParagraph, $matches)) {
                     $firstLine = strtok($cleanParagraph, "\r\n");
                     if (mb_strlen($firstLine) <= 120) {
                         $currentSectionTitle = $firstLine;
                     }
                 }
 
+                // Construct a precise, unambiguous reference label
+                $referenceLabel = sprintf('%s § P.%d — %s', $docRef, $pageNumber, $currentSectionTitle);
+
                 DocumentSection::create([
                     'document_id' => $document->id,
                     'page_number' => $pageNumber,
                     'section_title' => $currentSectionTitle,
+                    'reference_label' => $referenceLabel,
                     'content' => $cleanParagraph,
                     'order' => $order++,
                 ]);

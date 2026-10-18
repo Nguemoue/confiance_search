@@ -12,8 +12,10 @@ class Document extends Model
     protected $fillable = [
         'title',
         'slug',
+        'reference_code',
         'description',
         'department',
+        'language',
         'file_path',
         'original_filename',
         'file_size',
@@ -27,6 +29,12 @@ class Document extends Model
         static::creating(function (Document $document): void {
             if (empty($document->slug) && ! empty($document->title)) {
                 $document->slug = Str::slug($document->title);
+            }
+            if (empty($document->reference_code)) {
+                $document->reference_code = 'CS-DOC-'.strtoupper(Str::random(6));
+            }
+            if (empty($document->language)) {
+                $document->language = 'fr';
             }
         });
     }
@@ -48,6 +56,18 @@ class Document extends Model
     }
 
     /**
+     * Scope by language.
+     */
+    public function scopeLanguage(Builder $query, ?string $language): Builder
+    {
+        if (empty($language) || $language === 'all') {
+            return $query;
+        }
+
+        return $query->where('language', $language);
+    }
+
+    /**
      * Search documents and their sections.
      */
     public function scopeSearch(Builder $query, string $term): Builder
@@ -59,12 +79,14 @@ class Document extends Model
 
         return $query->where(function (Builder $q) use ($term): void {
             $q->where('title', 'like', "%{$term}%")
+                ->orWhere('reference_code', 'like', "%{$term}%")
                 ->orWhere('description', 'like', "%{$term}%")
                 ->orWhere('department', 'like', "%{$term}%")
                 ->orWhere('raw_text', 'like', "%{$term}%")
                 ->orWhereHas('sections', function (Builder $sectionQuery) use ($term): void {
                     $sectionQuery->where('content', 'like', "%{$term}%")
-                        ->orWhere('section_title', 'like', "%{$term}%");
+                        ->orWhere('section_title', 'like', "%{$term}%")
+                        ->orWhere('reference_label', 'like', "%{$term}%");
                 });
         });
     }

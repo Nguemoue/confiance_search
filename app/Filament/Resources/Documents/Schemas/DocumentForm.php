@@ -19,8 +19,9 @@ class DocumentForm
     {
         return $schema
             ->components([
-                Section::make('Fichier PDF & Indexation')
+                Section::make('Fichier PDF & Indexation CS Knowledge')
                     ->description('Téléversez le document PDF pour extraction automatique du contenu, des sections et indexation.')
+                    ->columnSpanFull()
                     ->schema([
                         FileUpload::make('file_path')
                             ->label('Fichier PDF officiel')
@@ -32,14 +33,24 @@ class DocumentForm
                             ->helperText('Téléversez un document PDF numérique contenant du texte pour permettre la recherche plein texte.')
                             ->afterStateUpdated(function (Set $set, $state): void {
                                 if ($state && method_exists($state, 'getClientOriginalName')) {
-                                    $set('original_filename', $state->getClientOriginalName());
-                                    $set('title', pathinfo($state->getClientOriginalName(), PATHINFO_FILENAME));
-                                    $set('slug', Str::slug(pathinfo($state->getClientOriginalName(), PATHINFO_FILENAME)));
+                                    $filename = $state->getClientOriginalName();
+                                    $set('original_filename', $filename);
+                                    $set('title', pathinfo($filename, PATHINFO_FILENAME));
+                                    $set('slug', Str::slug(pathinfo($filename, PATHINFO_FILENAME)));
                                     $set('file_size', $state->getSize());
+                                    $set('reference_code', 'CS-DOC-'.strtoupper(Str::random(6)));
                                 }
                             }),
 
-                        Grid::make(2)->schema([
+                        Grid::make(3)->schema([
+                            TextInput::make('reference_code')
+                                ->label('Code de Référence Documentaire')
+                                ->placeholder('Ex: CS-RH-2026-001')
+                                ->required()
+                                ->maxLength(50)
+                                ->default(fn () => 'CS-DOC-'.strtoupper(Str::random(6)))
+                                ->helperText('Référence unique apposée à chaque section extraite'),
+
                             TextInput::make('title')
                                 ->label('Titre du document')
                                 ->placeholder('Ex: Accord d’entreprise & Télétravail 2026')
@@ -58,23 +69,32 @@ class DocumentForm
                                 ->maxLength(255),
                         ]),
 
-                        Grid::make(2)->schema([
+                        Grid::make(3)->schema([
                             Select::make('department')
                                 ->label('Direction / Pôle')
                                 ->options([
-                                    'Ressources Humaines' => 'Ressources Humaines',
-                                    'Informatique & DSI' => 'Informatique & DSI',
-                                    'Finance & Achats' => 'Finance & Achats',
-                                    'Direction Générale & Juridique' => 'Direction Générale & Juridique',
-                                    'Sécurité & Conformité' => 'Sécurité & Conformité',
-                                    'Moyens Généraux' => 'Moyens Généraux',
+                                    'Ressources Humaines' => 'Ressources Humaines (HR)',
+                                    'Informatique & DSI' => 'Informatique & DSI (IT)',
+                                    'Finance & Achats' => 'Finance & Achats (Finance & Procurement)',
+                                    'Direction Générale & Juridique' => 'Direction Générale & Juridique (Legal)',
+                                    'Sécurité & Conformité' => 'Sécurité & Conformité (Security & Compliance)',
+                                    'Moyens Généraux' => 'Moyens Généraux (Operations)',
                                 ])
                                 ->searchable()
                                 ->preload()
                                 ->placeholder('Sélectionnez la direction référente'),
 
+                            Select::make('language')
+                                ->label('Langue du document')
+                                ->options([
+                                    'fr' => 'Français (French)',
+                                    'en' => 'Anglais (English)',
+                                ])
+                                ->default('fr')
+                                ->required(),
+
                             Toggle::make('is_published')
-                                ->label('Publié (accessible aux collaborateurs)')
+                                ->label('Publié (visible dans CS Knowledge)')
                                 ->default(true)
                                 ->inline(false),
                         ]),

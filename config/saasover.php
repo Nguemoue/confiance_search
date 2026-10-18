@@ -4,18 +4,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Confiance - Design System & Configuration
+    | CS Knowledge - Design System & Configuration
     |--------------------------------------------------------------------------
     |
-    | Configuration de la plateforme interne de recherche documentaire
-    | pour l'entreprise Confiance (thème épuré, fond gris perle & bleu marine logo #081951).
+    | Configuration de la plateforme CS Knowledge pour l'entreprise Confiance
+    | (thème épuré, fond gris perle & bleu marine logo #081951).
     |
     */
 
     'brand' => [
-        'name' => 'Confiance',
+        'name' => 'CS Knowledge',
         'subname' => 'NvonchiSearch',
-        'fullname' => 'Confiance',
+        'fullname' => 'CS Knowledge',
         'company' => 'Entreprise Confiance',
         'tagline' => 'Portail documentaire & recherche interne',
         'baseline' => 'Référentiel des procédures, modes opératoires et documents officiels',
@@ -43,7 +43,6 @@ return [
     |--------------------------------------------------------------------------
     */
     'colors' => [
-        // Palette Confiance (basée sur le logo officiel #081951)
         'brand' => [
             50 => '#f1f4fa',
             100 => '#e2e8f4',
@@ -58,7 +57,6 @@ return [
             950 => '#040d2b',
         ],
 
-        // Thème Fond Gris & Interface Épurée
         'theme' => [
             'bg' => '#f4f5f7',
             'surface' => '#ffffff',
@@ -74,11 +72,6 @@ return [
         ],
     ],
 
-    /*
-    |--------------------------------------------------------------------------
-    | Badges de confiance
-    |--------------------------------------------------------------------------
-    */
     'trust_badges' => [
         [
             'title' => 'Documents certifiés',

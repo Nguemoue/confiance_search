@@ -19,16 +19,30 @@ class DocumentsTable
     {
         return $table
             ->columns([
+                TextColumn::make('reference_code')
+                    ->label('Réf. Source')
+                    ->badge()
+                    ->color('primary')
+                    ->searchable()
+                    ->sortable(),
+
                 TextColumn::make('title')
                     ->label('Document')
                     ->searchable()
                     ->sortable()
                     ->description(fn (Document $record): ?string => $record->original_filename ? Str::limit($record->original_filename, 40) : null),
 
+                TextColumn::make('language')
+                    ->label('Langue')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => strtoupper($state))
+                    ->color(fn (string $state): string => $state === 'fr' ? 'info' : 'success')
+                    ->sortable(),
+
                 TextColumn::make('department')
                     ->label('Direction / Pôle')
                     ->badge()
-                    ->color('primary')
+                    ->color('gray')
                     ->searchable()
                     ->sortable(),
 
@@ -39,7 +53,7 @@ class DocumentsTable
                     ->sortable(),
 
                 TextColumn::make('sections_count')
-                    ->label('Sections extraites')
+                    ->label('Sections')
                     ->counts('sections')
                     ->badge()
                     ->color('gray')
@@ -63,6 +77,13 @@ class DocumentsTable
             ])
             ->defaultSort('created_at', 'desc')
             ->filters([
+                SelectFilter::make('language')
+                    ->label('Langue')
+                    ->options([
+                        'fr' => 'Français',
+                        'en' => 'English',
+                    ]),
+
                 SelectFilter::make('department')
                     ->label('Direction')
                     ->options([

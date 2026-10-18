@@ -9,7 +9,6 @@ use Filament\Http\Middleware\DispatchServingFilamentEvent;
 use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Filament\PanelProvider;
-use Filament\Support\Colors\Color;
 use Filament\Widgets\AccountWidget;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
@@ -27,12 +26,24 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->login()
-            ->brandName('Nvonchi Search')
-            ->brandLogo(asset('logo.jpg'))
-            ->brandLogoHeight('2.75rem')
-            ->favicon(asset('logo.jpg'))
+            ->brandName('CS Knowledge')
+            ->brandLogo(asset('images/logo-confiance.png'))
+            ->brandLogoHeight('2.5rem')
+            ->favicon(asset('images/logo-confiance.png'))
             ->colors([
-                'primary' => Color::Indigo,
+                'primary' => [
+                    50 => '#f1f4fa',
+                    100 => '#e2e8f4',
+                    200 => '#c8d4ec',
+                    300 => '#a2b8e0',
+                    400 => '#6b92ce',
+                    500 => '#3d6db8',
+                    600 => '#1e4b97',
+                    700 => '#143673',
+                    800 => '#0e2454',
+                    900 => '#081951',
+                    950 => '#040d2b',
+                ],
             ])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\Filament\Pages')

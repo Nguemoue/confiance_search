@@ -25,6 +25,12 @@ new class extends Component
     public string $activeTab = 'all';
 
     /**
+     * Language filter: 'all', 'fr', 'en'
+     */
+    #[Url(as: 'lang')]
+    public string $docLanguage = 'all';
+
+    /**
      * @var list<string>
      */
     public array $searchHistory = [];
@@ -43,6 +49,19 @@ new class extends Component
     public function setTab(string $tab): void
     {
         $this->activeTab = $tab;
+    }
+
+    public function setLanguage(string $lang): void
+    {
+        $this->docLanguage = $lang;
+    }
+
+    public function switchAppLocale(string $locale): void
+    {
+        if (in_array($locale, ['fr', 'en'])) {
+            session(['locale' => $locale]);
+            app()->setLocale($locale);
+        }
     }
 
     /**
@@ -102,7 +121,7 @@ new class extends Component
             return $escaped;
         }
 
-        $pattern = '/('.preg_quote(e($term), '/').')/iu';
+        $pattern = '/(' . preg_quote(e($term), '/') . ')/iu';
 
         return preg_replace(
             $pattern,
@@ -116,7 +135,7 @@ new class extends Component
      */
     public function getSnippet(string $content): string
     {
-        $result = PdfParserService::extractSnippet($content, $this->search, 140);
+        $result = PdfParserService::extractSnippet($content, $this->search, 150);
 
         return $this->highlightText($result['snippet']);
     }
@@ -136,46 +155,55 @@ new class extends Component
     {
         $trimmedSearch = trim($this->search);
 
-        // Fetch documents matching search query
+        // Fetch documents matching search query and language filter
         $documentsQuery = Document::query()
             ->published()
             ->with(['sections']);
 
+        if ($this->docLanguage !== 'all') {
+            $documentsQuery->where('language', $this->docLanguage);
+        }
+
         if ($trimmedSearch !== '') {
+            // Priority: direct matches in title, reference, or section content
             $documentsQuery->search($trimmedSearch);
         }
 
         $documents = $documentsQuery->latest()->get();
 
-        // Fetch topics matching search query
-        if ($trimmedSearch !== '') {
-            try {
-                $topics = Topic::search($trimmedSearch)
-                    ->query(function ($query): void {
-                        $query->published()
-                            ->with([
-                                'options' => fn ($q) => $q->published()->orderBy('order'),
-                            ]);
-                    })
-                    ->get();
-            } catch (\Throwable $e) {
+        // Fetch topics matching search query (only when no strict EN filter active)
+        if ($this->docLanguage === 'en') {
+            $topics = new Collection();
+        } else {
+            if ($trimmedSearch !== '') {
+                try {
+                    $topics = Topic::search($trimmedSearch)
+                        ->query(function ($query): void {
+                            $query->published()
+                                ->with([
+                                    'options' => fn ($q) => $q->published()->orderBy('order'),
+                                ]);
+                        })
+                        ->get();
+                } catch (\Throwable $e) {
+                    $topics = Topic::query()
+                        ->published()
+                        ->with([
+                            'options' => fn ($q) => $q->published()->orderBy('order'),
+                        ])
+                        ->search($trimmedSearch)
+                        ->orderBy('order')
+                        ->get();
+                }
+            } else {
                 $topics = Topic::query()
                     ->published()
                     ->with([
                         'options' => fn ($q) => $q->published()->orderBy('order'),
                     ])
-                    ->search($trimmedSearch)
                     ->orderBy('order')
                     ->get();
             }
-        } else {
-            $topics = Topic::query()
-                ->published()
-                ->with([
-                    'options' => fn ($q) => $q->published()->orderBy('order'),
-                ])
-                ->orderBy('order')
-                ->get();
         }
 
         $totalTopicsCount = $this->stats['total_topics'] ?? Topic::query()->published()->count();
@@ -311,7 +339,6 @@ new class extends Component
         class="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-white border-r border-slate-200 z-50 flex flex-col md:hidden shadow-xl"
         style="display: none;"
     >
-        <!-- Mobile Sidebar Header -->
         <div class="h-16 px-5 border-b border-slate-200 flex items-center justify-between">
             <x-saasover.logo size="md" />
             <button
@@ -324,31 +351,44 @@ new class extends Component
             </button>
         </div>
 
-        <!-- Mobile Sidebar Scrollable Content -->
         <div class="flex-1 overflow-y-auto px-4 py-5 space-y-6">
-            <!-- Statut Portail Confiance -->
-            <div class="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#f1f4fa] border border-[#e2e8f4] text-xs">
-                <span class="size-2 rounded-full bg-[#081951]"></span>
-                <span class="text-[#081951] font-semibold">Portail Interne Confiance</span>
-                <span class="ml-auto text-[10px] text-slate-600 font-bold bg-white px-2 py-0.5 rounded border border-slate-200">Actif</span>
+            <!-- Language Switcher Mobile -->
+            <div class="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <span class="text-xs font-semibold text-slate-700">Langue / Language :</span>
+                <div class="flex items-center gap-1">
+                    <button
+                        type="button"
+                        wire:click="switchAppLocale('fr')"
+                        class="px-2.5 py-1 rounded text-xs font-bold {{ app()->getLocale() === 'fr' ? 'bg-[#081951] text-white' : 'bg-white text-slate-600 border border-slate-200' }}"
+                    >
+                        FR
+                    </button>
+                    <button
+                        type="button"
+                        wire:click="switchAppLocale('en')"
+                        class="px-2.5 py-1 rounded text-xs font-bold {{ app()->getLocale() === 'en' ? 'bg-[#081951] text-white' : 'bg-white text-slate-600 border border-slate-200' }}"
+                    >
+                        EN
+                    </button>
+                </div>
             </div>
 
             <!-- Stats Mini Card -->
             <div class="grid grid-cols-2 gap-2">
                 <div class="p-3 rounded-xl bg-slate-50 border border-slate-200">
                     <div class="text-lg font-bold text-[#081951] font-display">{{ $totalDocumentsCount }}</div>
-                    <div class="text-[11px] text-slate-500">Documents PDF</div>
+                    <div class="text-[11px] text-slate-500">{{ __('portal.pdf_tab') }}</div>
                 </div>
                 <div class="p-3 rounded-xl bg-slate-50 border border-slate-200">
                     <div class="text-lg font-bold text-slate-900 font-display">{{ $totalSectionsCount }}</div>
-                    <div class="text-[11px] text-slate-500">Sections indexées</div>
+                    <div class="text-[11px] text-slate-500">{{ __('portal.section') }}s</div>
                 </div>
             </div>
 
             <!-- Navigation Links -->
             <div class="space-y-1">
                 <div class="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">
-                    Navigation
+                    {{ __('portal.navigation') }}
                 </div>
 
                 <button
@@ -359,7 +399,7 @@ new class extends Component
                 >
                     <span class="flex items-center gap-2.5">
                         <i class="fas fa-layer-group text-xs"></i>
-                        <span>Tous les documents</span>
+                        <span>{{ __('portal.all_documents') }}</span>
                     </span>
                     <span class="text-xs px-2 py-0.5 rounded-full {{ empty($search) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700' }}">{{ $totalDocumentsCount }}</span>
                 </button>
@@ -369,7 +409,7 @@ new class extends Component
                     class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
                     <i class="fas fa-circle-info text-xs text-slate-400"></i>
-                    <span>À propos du portail</span>
+                    <span>{{ __('portal.about') }}</span>
                 </a>
 
                 <a
@@ -377,15 +417,15 @@ new class extends Component
                     class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
                     <i class="fas fa-headset text-xs text-slate-400"></i>
-                    <span>Support & Référents</span>
+                    <span>{{ __('portal.support') }}</span>
                 </a>
 
                 <a
-                    href="/admin"
+                    href="/admin/documents"
                     class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
                     <i class="fas fa-file-pdf text-xs text-slate-400"></i>
-                    <span>Gestion des PDF</span>
+                    <span>{{ __('portal.admin') }}</span>
                 </a>
             </div>
 
@@ -394,7 +434,7 @@ new class extends Component
                 <div class="flex items-center justify-between px-2 pb-1">
                     <div class="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
                         <i class="fas fa-clock-rotate-left text-slate-400 text-xs"></i>
-                        <span class="text-[10px] font-mono font-bold uppercase tracking-wider">Historique</span>
+                        <span class="text-[10px] font-mono font-bold uppercase tracking-wider">{{ __('portal.history') }}</span>
                     </div>
                     @if(!empty($searchHistory))
                         <button
@@ -402,7 +442,7 @@ new class extends Component
                             wire:click="clearHistory"
                             class="text-slate-400 hover:text-slate-700 text-xs font-medium"
                         >
-                            Effacer
+                            {{ __('portal.clear') }}
                         </button>
                     @endif
                 </div>
@@ -433,7 +473,7 @@ new class extends Component
                     </div>
                 @else
                     <div class="px-3 py-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
-                        <p class="text-xs text-slate-500">Aucune recherche récente</p>
+                        <p class="text-xs text-slate-500">{{ __('portal.no_history') }}</p>
                     </div>
                 @endif
             </div>
@@ -444,33 +484,57 @@ new class extends Component
     <!-- DESKTOP LEFT SIDEBAR                                          -->
     <!-- ============================================================== -->
     <aside class="w-72 lg:w-80 shrink-0 hidden md:flex flex-col h-screen sticky top-0 bg-white border-r border-slate-200 z-30 shadow-xs">
-        <!-- Brand Header -->
         <div class="h-16 px-6 border-b border-slate-200 flex items-center justify-between">
             <x-saasover.logo size="md" />
-            <span class="size-2 rounded-full bg-[#081951]" title="Portail interne opérationnel"></span>
+            <span class="size-2 rounded-full bg-[#081951]" title="{{ __('portal.portal_active') }}"></span>
         </div>
 
-        <!-- Sidebar Body (Scrollable) -->
         <div class="flex-1 overflow-y-auto px-4 py-5 space-y-6">
-            <!-- Confiance Portal Info -->
+            <!-- Language Switcher in Desktop Sidebar -->
+            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                    <i class="fas fa-globe text-[#081951] text-xs"></i>
+                    <span>Langue / Language</span>
+                </span>
+                <div class="flex items-center gap-1">
+                    <button
+                        type="button"
+                        wire:click="switchAppLocale('fr')"
+                        class="px-2.5 py-0.5 rounded text-xs font-bold transition-colors cursor-pointer {{ app()->getLocale() === 'fr' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white text-slate-600 hover:text-[#081951] border border-slate-200' }}"
+                        title="Afficher en Français"
+                    >
+                        FR
+                    </button>
+                    <button
+                        type="button"
+                        wire:click="switchAppLocale('en')"
+                        class="px-2.5 py-0.5 rounded text-xs font-bold transition-colors cursor-pointer {{ app()->getLocale() === 'en' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white text-slate-600 hover:text-[#081951] border border-slate-200' }}"
+                        title="Display in English"
+                    >
+                        EN
+                    </button>
+                </div>
+            </div>
+
+            <!-- Portal Info Box -->
             <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
                 <div class="flex items-center justify-between text-xs text-slate-600 font-medium">
                     <span class="flex items-center gap-1.5 text-slate-900 font-semibold font-display">
                         <i class="fas fa-file-pdf text-[#081951]"></i>
-                        <span>Recherche PDF & Sections</span>
+                        <span>CS Knowledge Base</span>
                     </span>
                     <span class="text-[10px] font-bold text-[#081951] uppercase tracking-wider bg-[#f1f4fa] border border-[#e2e8f4] px-2 py-0.5 rounded-full">
-                        Indexé
+                        {{ __('portal.certified') }}
                     </span>
                 </div>
                 <div class="grid grid-cols-2 gap-2 text-center">
                     <div class="p-2 rounded-lg bg-white border border-slate-200">
                         <div class="text-base font-bold text-[#081951] font-display">{{ $totalDocumentsCount }}</div>
-                        <div class="text-[10px] text-slate-500 uppercase font-semibold">Documents PDF</div>
+                        <div class="text-[10px] text-slate-500 uppercase font-semibold">{{ __('portal.pdf_tab') }}</div>
                     </div>
                     <div class="p-2 rounded-lg bg-white border border-slate-200">
                         <div class="text-base font-bold text-slate-900 font-display">{{ $totalSectionsCount }}</div>
-                        <div class="text-[10px] text-slate-500 uppercase font-semibold">Sections</div>
+                        <div class="text-[10px] text-slate-500 uppercase font-semibold">{{ __('portal.section') }}s</div>
                     </div>
                 </div>
             </div>
@@ -478,7 +542,7 @@ new class extends Component
             <!-- Navigation Links -->
             <div class="space-y-1">
                 <div class="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">
-                    Navigation
+                    {{ __('portal.navigation') }}
                 </div>
 
                 <button
@@ -488,7 +552,7 @@ new class extends Component
                 >
                     <span class="flex items-center gap-2.5">
                         <i class="fas fa-layer-group text-xs"></i>
-                        <span>Tous les documents</span>
+                        <span>{{ __('portal.all_documents') }}</span>
                     </span>
                     <span class="text-xs px-2 py-0.5 rounded-full {{ empty($search) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700' }}">{{ $totalDocumentsCount }}</span>
                 </button>
@@ -498,7 +562,7 @@ new class extends Component
                     class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
                     <i class="fas fa-circle-info text-xs text-slate-400"></i>
-                    <span>À propos du portail</span>
+                    <span>{{ __('portal.about') }}</span>
                 </a>
 
                 <a
@@ -506,7 +570,7 @@ new class extends Component
                     class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
                     <i class="fas fa-headset text-xs text-slate-400"></i>
-                    <span>Support & Référents</span>
+                    <span>{{ __('portal.support') }}</span>
                 </a>
 
                 <a
@@ -514,7 +578,7 @@ new class extends Component
                     class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
                     <i class="fas fa-file-arrow-up text-xs text-[#081951]"></i>
-                    <span>Téléverser des PDF</span>
+                    <span>{{ __('portal.add_pdf') }}</span>
                 </a>
             </div>
 
@@ -523,7 +587,7 @@ new class extends Component
                 <div class="flex items-center justify-between px-2 pb-1">
                     <div class="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
                         <i class="fas fa-clock-rotate-left text-slate-400 text-xs"></i>
-                        <span class="text-[10px] font-mono font-bold uppercase tracking-wider">Historique</span>
+                        <span class="text-[10px] font-mono font-bold uppercase tracking-wider">{{ __('portal.history') }}</span>
                     </div>
                     @if(!empty($searchHistory))
                         <button
@@ -531,7 +595,7 @@ new class extends Component
                             wire:click="clearHistory"
                             class="text-slate-400 hover:text-slate-700 text-xs font-medium cursor-pointer"
                         >
-                            Effacer
+                            {{ __('portal.clear') }}
                         </button>
                     @endif
                 </div>
@@ -563,18 +627,16 @@ new class extends Component
                 @else
                     <div class="px-3.5 py-4 rounded-xl bg-slate-50 border border-slate-200 text-center">
                         <i class="fas fa-clock text-slate-300 text-sm mb-1 block"></i>
-                        <p class="text-xs text-slate-600 font-medium">Aucune recherche récente</p>
-                        <p class="text-[10px] text-slate-400 mt-0.5">Vos recherches apparaîtront ici.</p>
+                        <p class="text-xs text-slate-600 font-medium">{{ __('portal.no_history') }}</p>
                     </div>
                 @endif
             </div>
         </div>
 
-        <!-- Sidebar Footer -->
         <div class="p-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500">
             <span class="flex items-center gap-1.5">
                 <span class="size-2 rounded-full bg-[#081951]"></span>
-                <span>Raccourci</span>
+                <span>CS Knowledge</span>
             </span>
             <kbd class="px-2 py-0.5 bg-white border border-slate-200 rounded font-mono text-slate-600 text-[10px] shadow-2xs">/</kbd>
         </div>
@@ -586,7 +648,6 @@ new class extends Component
     <main class="flex-1 min-w-0 flex flex-col min-h-screen bg-transparent relative z-10">
         <!-- Top Sticky Header Bar -->
         <header class="sticky top-0 z-20 backdrop-blur-md bg-white/95 border-b border-slate-200 px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-3 sm:gap-6">
-            <!-- Mobile Toggle -->
             <button
                 type="button"
                 @click="mobileSidebarOpen = true"
@@ -598,25 +659,22 @@ new class extends Component
 
             <!-- Search Input Box -->
             <div class="relative flex-1 max-w-2xl flex items-center bg-white border border-slate-200 rounded-xl px-3.5 py-2 focus-within:border-[#081951] focus-within:ring-2 focus-within:ring-[#081951]/10 shadow-xs transition-all">
-                <!-- Search Icon -->
                 <div class="pr-2.5 flex items-center pointer-events-none text-[#081951]">
                     <svg viewBox="0 0 20 20" fill="currentColor" class="size-4.5">
                         <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
                     </svg>
                 </div>
 
-                <!-- Input -->
                 <input
                     x-ref="searchInput"
                     type="text"
                     wire:model.live.debounce.250ms="search"
                     @keydown.enter="recordSearch"
-                    placeholder="Rechercher un terme, un article ou un mot-clé dans les documents PDF (ex: Article, indemnité, télétravail)..."
+                    placeholder="{{ __('portal.search_placeholder') }}"
                     class="w-full bg-transparent text-sm sm:text-base text-slate-900 placeholder-slate-400 focus:outline-hidden font-sans"
                     autofocus
                 />
 
-                <!-- Controls inside input -->
                 <div class="flex items-center gap-2 pl-2">
                     <div wire:loading wire:target="search" class="text-[#081951]">
                         <i class="fas fa-circle-notch fa-spin text-sm"></i>
@@ -641,87 +699,121 @@ new class extends Component
 
             <!-- Top Right Action Controls -->
             <div class="flex items-center gap-2">
+                <!-- Direct Language Switcher in Header -->
+                <div class="hidden sm:flex items-center rounded-lg border border-slate-200 p-0.5 bg-slate-50 text-xs font-semibold">
+                    <button
+                        type="button"
+                        wire:click="switchAppLocale('fr')"
+                        class="px-2 py-0.5 rounded transition-colors cursor-pointer {{ app()->getLocale() === 'fr' ? 'bg-[#081951] text-white' : 'text-slate-600 hover:text-[#081951]' }}"
+                    >
+                        FR
+                    </button>
+                    <button
+                        type="button"
+                        wire:click="switchAppLocale('en')"
+                        class="px-2 py-0.5 rounded transition-colors cursor-pointer {{ app()->getLocale() === 'en' ? 'bg-[#081951] text-white' : 'text-slate-600 hover:text-[#081951]' }}"
+                    >
+                        EN
+                    </button>
+                </div>
+
                 <a
                     href="/admin/documents"
                     class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-[#081951] hover:bg-[#0e2454] text-white transition-all shadow-xs"
-                    title="Gérer et ajouter des fichiers PDF"
+                    title="{{ __('portal.add_pdf') }}"
                 >
                     <i class="fas fa-upload text-xs"></i>
-                    <span class="hidden sm:inline">Ajouter un PDF</span>
+                    <span class="hidden sm:inline">{{ __('portal.add_pdf') }}</span>
                 </a>
             </div>
         </header>
 
         <!-- Main Body Flow -->
         <div class="flex-1 px-4 sm:px-6 lg:px-8 py-6 max-w-6xl w-full mx-auto space-y-6">
-            <!-- Hero Section -->
+            <!-- Hero Section Dédiée à CS Knowledge -->
             <div class="rounded-2xl bg-white border border-slate-200 p-6 sm:p-8 shadow-xs">
                 <div class="max-w-3xl">
                     <div class="flex flex-wrap items-center gap-2 mb-3">
-                        <x-saasover.verified-badge text="Recherche Textuelle & Périmétrique dans les PDF" />
+                        <x-saasover.verified-badge text="CS Knowledge &bull; Référentiel Documentaire" />
                         <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
                             Entreprise Confiance
+                        </span>
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-[#f1f4fa] text-[#081951] border border-[#e2e8f4]">
+                            <i class="fas fa-language text-xs"></i>
+                            Bilingue FR / EN
                         </span>
                     </div>
 
                     <h1 class="text-2xl sm:text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight leading-tight font-display">
-                        Recherche dans le contenu des documents PDF <br class="hidden sm:inline" />
-                        <span class="text-[#081951]">avec repérage des sections parentes</span>
+                        CS Knowledge <br class="hidden sm:inline" />
+                        <span class="text-[#081951]">Moteur de Recherche & Références Documentaires</span>
                     </h1>
 
                     <p class="mt-3 text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
-                        Chaque mot-clé recherché extrait automatiquement la <strong>section parente</strong>, la <strong>page exacte</strong> et le <strong>contexte périphérique</strong> autour du passage dans le document officiel.
+                        Retrouvez immédiatement les documents spécifiques directement liés à vos recherches. Chaque paragraphe extrait est accompagné de la <strong>référence exacte du document source</strong> et de sa section parente.
                     </p>
-
-                    <!-- Trust Chips -->
-                    <div class="mt-5 flex flex-wrap items-center gap-2 text-xs">
-                        <x-saasover.hero-float
-                            title="Sections & Articles"
-                            subtitle="Affichage du titre parent exact"
-                        />
-                        <x-saasover.hero-float
-                            title="Contexte Périphérique"
-                            subtitle="Phrase complète autour du terme"
-                        />
-                        <x-saasover.hero-float
-                            title="Ouverture Directe"
-                            subtitle="Lien vers la bonne page du PDF"
-                        />
-                    </div>
                 </div>
             </div>
 
-            <!-- Filter Tabs (Tous / Documents PDF / Fiches Métiers) -->
-            <div class="flex items-center gap-2 border-b border-slate-200 pb-2">
-                <button
-                    type="button"
-                    wire:click="setTab('all')"
-                    class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'all' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
-                >
-                    <i class="fas fa-layer-group text-[10px] mr-1.5"></i>
-                    <span>Tout afficher</span>
-                    <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'all' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $documents->count() + $topics->count() }}</span>
-                </button>
+            <!-- Filter Tabs (Tous / Documents PDF / Fiches Métiers) & Language Filter -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                <div class="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0">
+                    <button
+                        type="button"
+                        wire:click="setTab('all')"
+                        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'all' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
+                    >
+                        <i class="fas fa-layer-group text-[10px] mr-1"></i>
+                        <span>{{ __('portal.all_tab') }}</span>
+                        <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'all' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $documents->count() + $topics->count() }}</span>
+                    </button>
 
-                <button
-                    type="button"
-                    wire:click="setTab('pdf')"
-                    class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'pdf' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
-                >
-                    <i class="fas fa-file-pdf text-[10px] mr-1.5 text-rose-500"></i>
-                    <span>Documents PDF</span>
-                    <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'pdf' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $documents->count() }}</span>
-                </button>
+                    <button
+                        type="button"
+                        wire:click="setTab('pdf')"
+                        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'pdf' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
+                    >
+                        <i class="fas fa-file-pdf text-[10px] mr-1 text-rose-500"></i>
+                        <span>{{ __('portal.pdf_tab') }}</span>
+                        <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'pdf' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $documents->count() }}</span>
+                    </button>
 
-                <button
-                    type="button"
-                    wire:click="setTab('guides')"
-                    class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'guides' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
-                >
-                    <i class="fas fa-folder-open text-[10px] mr-1.5 text-blue-500"></i>
-                    <span>Fiches Métiers & FAQ</span>
-                    <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'guides' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $topics->count() }}</span>
-                </button>
+                    <button
+                        type="button"
+                        wire:click="setTab('guides')"
+                        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'guides' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
+                    >
+                        <i class="fas fa-folder-open text-[10px] mr-1 text-blue-500"></i>
+                        <span>{{ __('portal.guides_tab') }}</span>
+                        <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'guides' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $topics->count() }}</span>
+                    </button>
+                </div>
+
+                <!-- Document Language Filter -->
+                <div class="flex items-center gap-1.5 self-start sm:self-auto text-xs">
+                    <span class="text-slate-500 font-medium mr-1">{{ __('portal.filter_lang') }} :</span>
+                    <button
+                        type="button"
+                        wire:click="setLanguage('all')"
+                        class="px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer {{ $docLanguage === 'all' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200' }}"
+                    >
+                        {{ __('portal.all_languages') }}
+                    </button>
+                    <button
+                        type="button"
+                        wire:click="setLanguage('fr')"
+                        class="px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer {{ $docLanguage === 'fr' ? 'bg-[#081951] text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200' }}"
+                    >
+                        🇫🇷 Français
+                    </button>
+                    <button
+                        type="button"
+                        wire:click="setLanguage('en')"
+                        class="px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer {{ $docLanguage === 'en' ? 'bg-[#081951] text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200' }}"
+                    >
+                        🇬🇧 English
+                    </button>
+                </div>
             </div>
 
             <!-- Historique des Recherches -->
@@ -730,11 +822,7 @@ new class extends Component
                     <div class="flex items-center gap-1.5">
                         <i class="fas fa-clock-rotate-left text-slate-400 text-xs"></i>
                         <span class="font-mono text-[10px] uppercase tracking-wider text-slate-500 font-bold">
-                            @if(!empty($searchHistory))
-                                VOS RECHERCHES RÉCENTES
-                            @else
-                                RECHERCHES SUGGÉRÉES DANS LES DOCUMENTS
-                            @endif
+                            {{ !empty($searchHistory) ? 'VOS RECHERCHES RÉCENTES' : 'RECHERCHES RECOMMANDÉES' }}
                         </span>
                     </div>
 
@@ -745,7 +833,7 @@ new class extends Component
                             class="text-slate-400 hover:text-slate-700 text-xs font-medium cursor-pointer flex items-center gap-1"
                         >
                             <i class="fas fa-trash-can text-[10px]"></i>
-                            <span>Vider l'historique</span>
+                            <span>{{ __('portal.clear') }}</span>
                         </button>
                     @endif
                 </div>
@@ -776,13 +864,14 @@ new class extends Component
                     @else
                         @php
                             $suggestions = [
-                                'Article',
+                                'Article 4',
+                                'CS-RH-2026-001',
                                 'Télétravail',
-                                'Indemnité',
                                 'VPN',
-                                'Mot de passe',
-                                'Achats',
-                                'Bon de commande'
+                                'Indemnité',
+                                'Remote Work',
+                                'Cybersecurity',
+                                'Budget'
                             ];
                         @endphp
                         @foreach($suggestions as $suggested)
@@ -804,12 +893,12 @@ new class extends Component
                 <div class="flex items-center gap-2">
                     @if(!empty($search))
                         <span>
-                            Résultats pour « <strong class="text-[#081951]">{{ $search }}</strong> » :
-                            <strong class="text-slate-900">{{ $documents->count() }}</strong> PDF et <strong class="text-slate-900">{{ $topics->count() }}</strong> fiches trouvées
+                            {{ __('portal.results_for') }} « <strong class="text-[#081951]">{{ $search }}</strong> » :
+                            <strong class="text-slate-900">{{ $documents->count() }}</strong> PDF et <strong class="text-slate-900">{{ $topics->count() }}</strong> fiches
                         </span>
                     @else
                         <span>
-                            Affichage de <strong class="text-slate-900">{{ $documents->count() }}</strong> documents PDF et <strong class="text-slate-900">{{ $topics->count() }}</strong> fiches métiers
+                            {{ __('portal.displaying') }} <strong class="text-slate-900">{{ $documents->count() }}</strong> documents PDF et <strong class="text-slate-900">{{ $topics->count() }}</strong> fiches
                         </span>
                     @endif
                 </div>
@@ -820,7 +909,7 @@ new class extends Component
                         @click="expandAll([{{ $topics->pluck('id')->implode(',') }}], [{{ $documents->pluck('id')->implode(',') }}])"
                         class="text-xs font-medium text-slate-600 hover:text-[#081951] transition-colors cursor-pointer"
                     >
-                        Tout déplier
+                        {{ __('portal.expand_all') }}
                     </button>
                     <span class="text-slate-300">|</span>
                     <button
@@ -828,7 +917,7 @@ new class extends Component
                         @click="collapseAll()"
                         class="text-xs font-medium text-slate-600 hover:text-[#081951] transition-colors cursor-pointer"
                     >
-                        Tout replier
+                        {{ __('portal.collapse_all') }}
                     </button>
 
                     @if(!empty($search))
@@ -838,28 +927,29 @@ new class extends Component
                             wire:click="clearFilters"
                             class="text-xs font-medium text-rose-600 hover:text-rose-700 hover:underline cursor-pointer"
                         >
-                            Effacer la recherche
+                            {{ __('portal.clear_search') }}
                         </button>
                     @endif
                 </div>
             </div>
 
             <!-- ============================================================== -->
-            <!-- 1. SECTION DOCUMENTS PDF (Contenu Textuel & Sections Parentes) -->
+            <!-- 1. SECTION DOCUMENTS PDF (Avec Référence Source & Périphérie)  -->
             <!-- ============================================================== -->
             @if($activeTab === 'all' || $activeTab === 'pdf')
                 <div class="space-y-4">
-                    <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
-                        <i class="fas fa-file-pdf text-rose-600"></i>
-                        <span>Documents PDF Officiels (Recherche en Texte Intégral & Sections)</span>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
+                            <i class="fas fa-file-pdf text-rose-600"></i>
+                            <span>{{ __('portal.pdf_tab') }} (Documents Spécifiques & Références Sources)</span>
+                        </div>
                     </div>
 
                     @forelse($documents as $doc)
                         @php
                             $pdfUrl = Storage::url($doc->file_path);
-                            // Filter matching sections if search query is active
                             $matchingSections = !empty($search) 
-                                ? $doc->sections->filter(fn ($s) => mb_stripos($s->content, $search) !== false || mb_stripos($s->section_title, $search) !== false)
+                                ? $doc->sections->filter(fn ($s) => mb_stripos($s->content, $search) !== false || mb_stripos($s->section_title, $search) !== false || mb_stripos($s->reference_label, $search) !== false)
                                 : $doc->sections;
                         @endphp
                         <div
@@ -879,20 +969,33 @@ new class extends Component
 
                                     <div>
                                         <div class="flex flex-wrap items-center gap-2 mb-1">
+                                            <!-- Official Document Source Reference Code -->
+                                            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-xs font-mono font-bold bg-[#081951] text-white tracking-wide shadow-2xs" title="Référence Source Officielle">
+                                                <i class="fas fa-barcode text-[10px]"></i>
+                                                {{ $doc->reference_code }}
+                                            </span>
+
                                             <h2 class="text-base font-bold text-slate-900 font-display">
                                                 {!! $this->highlightText($doc->title) !!}
                                             </h2>
+
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold uppercase {{ $doc->language === 'en' ? 'bg-sky-50 text-sky-700 border border-sky-200' : 'bg-slate-100 text-slate-700 border border-slate-200' }}">
+                                                {{ strtoupper($doc->language) }}
+                                            </span>
+
                                             @if($doc->department)
                                                 <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-[#f1f4fa] text-[#081951] border border-[#e2e8f4]">
                                                     {{ $doc->department }}
                                                 </span>
                                             @endif
+
                                             <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                                                {{ $doc->page_count }} page(s) &bull; {{ $doc->formatted_file_size }}
+                                                {{ $doc->page_count }} {{ __('portal.page') }}(s) &bull; {{ $doc->formatted_file_size }}
                                             </span>
+
                                             @if(!empty($search) && $matchingSections->isNotEmpty())
                                                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
-                                                    {{ $matchingSections->count() }} passage(s) pertinent(s)
+                                                    {{ $matchingSections->count() }} passage(s) directement lié(s)
                                                 </span>
                                             @endif
                                         </div>
@@ -940,7 +1043,7 @@ new class extends Component
                                 </div>
                             </div>
 
-                            <!-- Document Sections & Snippets Accordion -->
+                            <!-- Document Sections & Snippets Accordion with Source Reference per Paragraph -->
                             <div
                                 x-show="isDocOpen({{ $doc->id }})"
                                 x-transition:enter="transition ease-out duration-150"
@@ -954,9 +1057,9 @@ new class extends Component
                                 <div class="text-xs text-slate-500 font-medium flex items-center justify-between pb-1">
                                     <span>
                                         @if(!empty($search))
-                                            Sections et paragraphes du document contenant le terme « <strong class="text-[#081951]">{{ $search }}</strong> » :
+                                            Passages spécifiques liés à la recherche « <strong class="text-[#081951]">{{ $search }}</strong> » :
                                         @else
-                                            Contenu et sections extraites du document :
+                                            Sections et paragraphes indexés du document :
                                         @endif
                                     </span>
                                     <a
@@ -965,58 +1068,73 @@ new class extends Component
                                         class="inline-flex items-center gap-1.5 text-xs text-[#081951] hover:underline font-semibold"
                                     >
                                         <i class="fas fa-download text-[10px]"></i>
-                                        <span>Télécharger le fichier original</span>
+                                        <span>{{ __('portal.download_pdf') }}</span>
                                     </a>
                                 </div>
 
                                 @forelse($matchingSections as $section)
-                                    <div class="bg-white rounded-lg p-4 border border-slate-200 shadow-2xs space-y-2">
-                                        <!-- Parent Breadcrumb & Page Info -->
+                                    <div class="bg-white rounded-lg p-4 border border-slate-200 shadow-2xs space-y-2.5">
+                                        <!-- Header with Document Source Reference and Parent Section -->
                                         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                                            <div class="flex items-center gap-2 text-xs">
-                                                <span class="inline-flex items-center gap-1 font-bold text-slate-900 font-display">
-                                                    <i class="fas fa-location-dot text-[#081951] text-xs"></i>
-                                                    <span>{{ $section->section_title ?: 'Section du document' }}</span>
+                                            <div class="flex flex-wrap items-center gap-2 text-xs">
+                                                <!-- Explicit Source Document Reference Badge -->
+                                                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700 font-mono text-[11px] font-bold" title="Document Source">
+                                                    <i class="fas fa-file-lines text-slate-400"></i>
+                                                    <span>{{ $doc->reference_code }}</span>
+                                                </span>
+
+                                                <span class="text-slate-300">&bull;</span>
+
+                                                <!-- Parent Section Title -->
+                                                <span class="inline-flex items-center gap-1.5 font-bold text-slate-900 font-display">
+                                                    <i class="fas fa-folder-open text-[#081951] text-xs"></i>
+                                                    <span>{{ $section->section_title ?: 'Section' }}</span>
                                                 </span>
                                             </div>
 
                                             <div class="flex items-center gap-2">
-                                                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-100 text-slate-700 border border-slate-200">
-                                                    Page {{ $section->page_number }}
+                                                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#f1f4fa] text-[#081951] border border-[#e2e8f4]">
+                                                    {{ __('portal.page') }} {{ $section->page_number }}
                                                 </span>
                                                 <a
                                                     href="{{ $pdfUrl }}#page={{ $section->page_number }}"
                                                     target="_blank"
-                                                    class="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-[#f1f4fa] hover:bg-[#e2e8f4] text-[#081951] transition-colors"
-                                                    title="Ouvrir le PDF directement à la page {{ $section->page_number }}"
+                                                    class="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-[#081951] hover:bg-[#0e2454] text-white transition-colors"
+                                                    title="Consulter le document source à la page {{ $section->page_number }}"
                                                 >
                                                     <i class="fas fa-book-open-reader text-[10px]"></i>
-                                                    <span>Page {{ $section->page_number }} &rarr;</span>
+                                                    <span>{{ __('portal.open_page') }} {{ $section->page_number }} &rarr;</span>
                                                 </a>
                                             </div>
                                         </div>
 
                                         <!-- Contextual Periphery Snippet -->
-                                        <div class="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans pt-1">
+                                        <div class="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans">
                                             @if(!empty($search))
-                                                <p class="italic bg-slate-50/70 p-3 rounded-md border border-slate-200/60">
+                                                <p class="italic bg-slate-50 p-3 rounded-md border border-slate-200/70">
                                                     « {!! $this->getSnippet($section->content) !!} »
                                                 </p>
                                             @else
                                                 <p>{!! nl2br(e($section->content)) !!}</p>
                                             @endif
                                         </div>
+
+                                        <!-- Bottom Reference Stamp -->
+                                        <div class="pt-1.5 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                                            <span>Réf. complète : {{ $section->reference_label }}</span>
+                                            <span>Fichier : {{ $doc->original_filename }}</span>
+                                        </div>
                                     </div>
                                 @empty
                                     <p class="text-xs text-slate-400 italic py-2">
-                                        Aucun paragraphe spécifique ne correspond au filtre actif.
+                                        {{ __('portal.no_results') }}
                                     </p>
                                 @endforelse
                             </div>
                         </div>
                     @empty
                         <div class="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-500 text-xs">
-                            Aucun document PDF ne correspond à votre recherche.
+                            {{ __('portal.no_results') }}
                         </div>
                     @endforelse
                 </div>
@@ -1025,21 +1143,20 @@ new class extends Component
             <!-- ============================================================== -->
             <!-- 2. SECTION FICHES MÉTIERS & PROCÉDURES                         -->
             <!-- ============================================================== -->
-            @if($activeTab === 'all' || $activeTab === 'guides')
+            @if(($activeTab === 'all' || $activeTab === 'guides') && $topics->isNotEmpty())
                 <div class="space-y-4 pt-2">
                     <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
                         <i class="fas fa-folder-tree text-blue-600"></i>
-                        <span>Fiches Métiers, FAQ & Procédures Collaborateurs</span>
+                        <span>{{ __('portal.guides_tab') }}</span>
                     </div>
 
                     <div class="space-y-3.5">
-                        @forelse($topics as $topic)
+                        @foreach($topics as $topic)
                             <div
                                 data-topic-id="{{ $topic->id }}"
                                 id="procedure-{{ $topic->id }}"
                                 class="bg-white rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition-all duration-150 overflow-hidden"
                             >
-                                <!-- Topic Header -->
                                 <div
                                     @click="toggleTopic({{ $topic->id }})"
                                     class="p-4 sm:p-5 cursor-pointer flex items-start justify-between gap-4 select-none hover:bg-slate-50/60 transition-colors"
@@ -1057,7 +1174,7 @@ new class extends Component
                                                 <h2 class="text-base font-bold text-slate-900 font-display">
                                                     {!! $this->highlightText($topic->title) !!}
                                                 </h2>
-                                                <x-saasover.verified-badge compact="true" text="Fiche validée Confiance" />
+                                                <x-saasover.verified-badge compact="true" text="Fiche validée CS Knowledge" />
                                                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
                                                     {{ $topic->options->count() }} démarche(s)
                                                 </span>
@@ -1071,7 +1188,6 @@ new class extends Component
                                         </div>
                                     </div>
 
-                                    <!-- Right Controls -->
                                     <div class="shrink-0 flex items-center gap-2 pt-1">
                                         <button
                                             type="button"
@@ -1096,7 +1212,6 @@ new class extends Component
                                     </div>
                                 </div>
 
-                                <!-- Accordion Options -->
                                 <div
                                     x-show="isTopicOpen({{ $topic->id }})"
                                     x-transition:enter="transition ease-out duration-150"
@@ -1161,11 +1276,7 @@ new class extends Component
                                     @endforelse
                                 </div>
                             </div>
-                        @empty
-                            <div class="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-500 text-xs">
-                                Aucune fiche métier ne correspond à votre recherche.
-                            </div>
-                        @endforelse
+                        @endforeach
                     </div>
                 </div>
             @endif
@@ -1173,10 +1284,10 @@ new class extends Component
             <!-- Call To Action Banner -->
             <div class="rounded-2xl bg-[#081951] p-6 sm:p-8 text-white text-center shadow-xs">
                 <h2 class="text-xl sm:text-2xl font-bold mb-2 font-display">
-                    Un document PDF manque ou doit être actualisé ?
+                    {{ __('portal.missing_doc_title') }}
                 </h2>
                 <p class="text-slate-300 text-xs sm:text-sm max-w-xl mx-auto mb-6 leading-relaxed font-sans">
-                    Les référents de pôle de l'entreprise Confiance peuvent téléverser de nouveaux fichiers PDF ou mettre à jour les documents existants directement dans l'espace gestionnaire.
+                    {{ __('portal.missing_doc_desc') }}
                 </p>
                 <div class="flex flex-wrap justify-center gap-3">
                     <a
@@ -1184,14 +1295,14 @@ new class extends Component
                         class="bg-white text-[#081951] hover:bg-slate-100 font-bold px-5 py-2 rounded-xl transition-colors shadow-xs inline-flex items-center gap-2 text-xs sm:text-sm"
                     >
                         <i class="fas fa-upload text-xs"></i>
-                        <span>Téléverser un nouveau PDF</span>
+                        <span>{{ __('portal.add_pdf') }}</span>
                     </a>
                     <a
                         href="{{ route('contact') }}"
                         class="bg-[#0e2454] hover:bg-[#143673] border border-slate-600 text-white font-semibold px-5 py-2 rounded-xl transition-colors inline-flex items-center gap-2 text-xs sm:text-sm"
                     >
                         <i class="fas fa-paper-plane text-xs"></i>
-                        <span>Signaler une mise à jour</span>
+                        <span>{{ __('portal.suggest_update') }}</span>
                     </a>
                 </div>
             </div>
@@ -1200,13 +1311,13 @@ new class extends Component
             <footer class="pt-6 pb-6 border-t border-slate-200 text-xs text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div class="flex items-center gap-3">
                     <x-saasover.mark size="size-5" />
-                    <span>&copy; {{ date('Y') }} Entreprise Confiance &bull; NvonchiSearch &bull; Base documentaire et procédures internes</span>
+                    <span>&copy; {{ date('Y') }} {{ __('portal.footer_copyright') }}</span>
                 </div>
                 <div class="flex items-center gap-5 font-medium text-slate-600">
-                    <a href="{{ route('home') }}" class="hover:text-[#081951] transition-colors">Accueil</a>
-                    <a href="{{ route('about') }}" class="hover:text-[#081951] transition-colors">À propos</a>
-                    <a href="{{ route('contact') }}" class="hover:text-[#081951] transition-colors">Contact Support</a>
-                    <a href="/admin" class="hover:text-[#081951] transition-colors">Administration</a>
+                    <a href="{{ route('home') }}" class="hover:text-[#081951] transition-colors">{{ __('portal.all_documents') }}</a>
+                    <a href="{{ route('about') }}" class="hover:text-[#081951] transition-colors">{{ __('portal.about') }}</a>
+                    <a href="{{ route('contact') }}" class="hover:text-[#081951] transition-colors">{{ __('portal.support') }}</a>
+                    <a href="/admin" class="hover:text-[#081951] transition-colors">{{ __('portal.admin') }}</a>
                 </div>
             </footer>
         </div>

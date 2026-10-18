@@ -20,6 +20,7 @@ class TopicForm
             ->components([
                 Section::make('Informations de la Thématique')
                     ->description('Détails généraux, département de rattachement et métadonnées de publication.')
+                    ->columnSpanFull()
                     ->schema([
                         Grid::make(2)->schema([
                             TextInput::make('title')
@@ -65,7 +66,7 @@ class TopicForm
                         ]),
 
                         Toggle::make('is_published')
-                            ->label('Publié (visible sur le portail interne)')
+                            ->label('Publié (visible sur CS Knowledge)')
                             ->default(true),
                     ]),
             ]);

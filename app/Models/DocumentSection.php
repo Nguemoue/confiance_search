@@ -11,6 +11,7 @@ class DocumentSection extends Model
     protected $fillable = [
         'document_id',
         'page_number',
+        'reference_label',
         'section_title',
         'content',
         'order',
@@ -36,7 +37,8 @@ class DocumentSection extends Model
 
         return $query->where(function (Builder $q) use ($term): void {
             $q->where('content', 'like', "%{$term}%")
-                ->orWhere('section_title', 'like', "%{$term}%");
+                ->orWhere('section_title', 'like', "%{$term}%")
+                ->orWhere('reference_label', 'like', "%{$term}%");
         });
     }
 }

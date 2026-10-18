@@ -15,42 +15,60 @@ class DocumentSeeder extends Seeder
      */
     public function run(): void
     {
-        // 1. Create realistic sample PDF files in storage
         if (! Storage::disk('public')->exists('documents')) {
             Storage::disk('public')->makeDirectory('documents');
         }
 
         $samplePdfs = [
             [
+                'reference_code' => 'CS-RH-2026-001',
                 'title' => 'Accord Collectif sur le Télétravail & Flexibilité',
                 'filename' => 'accord_teletravail_confiance.pdf',
                 'department' => 'Ressources Humaines',
+                'language' => 'fr',
                 'description' => 'Règles régissant le travail à distance, équipements alloués et allocations forfaitaires pour les salariés de Confiance.',
                 'pages' => [
-                    "ENTREPRISE CONFIANCE — ACCORD D'ENTREPRISE N° 2026-01\n\nSection 1 : Principes généraux et champ d'application\nLe présent accord s'applique à l'ensemble des collaborateurs sous contrat CDI ou CDD ayant validé leur période d'essai.",
+                    "ENTREPRISE CONFIANCE — ACCORD D'ENTREPRISE N° 2026-01 (Réf: CS-RH-2026-001)\n\nSection 1 : Principes généraux et champ d'application\nLe présent accord s'applique à l'ensemble des collaborateurs sous contrat CDI ou CDD ayant validé leur période d'essai.",
                     "Chapitre II : Organisation matérielle et ergonomie du poste\nArticle 4 : Équipements fournis par l'entreprise\nChaque salarié éligible au télétravail se voit confier un ordinateur portable sécurisé, un casque audio antibruit, ainsi qu'une station d'accueil double écran sur demande.",
                     "Section 3 : Prise en charge financière et indemnité forfaitaire\nArticle 12 : Modalités d'indemnisation\nUne indemnité forfaitaire mensuelle nette de 50 € est allouée pour couvrir les frais de connexion internet et les consommables informatiques. Cette indemnité est exonérée de cotisations sociales.",
                 ],
             ],
             [
+                'reference_code' => 'CS-DSI-2026-004',
                 'title' => 'Guide Pratique de Cybersécurité & Utilisation du VPN',
                 'filename' => 'guide_cybersecurite_vpn.pdf',
                 'department' => 'Informatique & DSI',
+                'language' => 'fr',
                 'description' => "Consignes obligatoires pour les accès aux serveurs internes, authentification MFA et procédure de signalement d'incidents.",
                 'pages' => [
-                    "DIRECTION DES SYSTÈMES D'INFORMATION (DSI) — GUIDE DE SÉCURITÉ\n\nChapitre I : Règles d'accès au réseau informatique\nL'accès distant aux ressources sensibles de l'entreprise Confiance nécessite obligatoirement l'activation du tunnel VPN d'entreprise.",
+                    "DIRECTION DES SYSTÈMES D'INFORMATION (DSI) — GUIDE DE SÉCURITÉ (Réf: CS-DSI-2026-004)\n\nChapitre I : Règles d'accès au réseau informatique\nL'accès distant aux ressources sensibles de l'entreprise Confiance nécessite obligatoirement l'activation du tunnel VPN d'entreprise.",
                     "Section 2 : Authentification et gestion des mots de passe\nArticle 3 : Politique de complexité\nLes mots de passe doivent comporter au moins 14 caractères combinant majuscules, minuscules, chiffres et caractères spéciaux. L'authentification multifacteur (MFA) est requise à chaque connexion.",
                     "Chapitre III : Procédure en cas d'incident de sécurité\nArticle 8 : Signalement obligatoire sous 2 heures\nToute tentative d'intrusion, réception de courriel de phishing suspect ou perte de matériel professionnel doit immédiatement être notifiée au pôle CERT interne.",
                 ],
             ],
             [
+                'reference_code' => 'CS-FIN-2026-012',
                 'title' => 'Politique des Achats & Circuit de Validation Budgétaire',
                 'filename' => 'politique_achats_engagements.pdf',
                 'department' => 'Finance & Achats',
+                'language' => 'fr',
                 'description' => "Seuils d'engagement financier, création de bons de commande et rapprochement comptable des factures fournisseurs.",
                 'pages' => [
-                    "DIRECTION FINANCIÈRE — PROCÉDURE D'ACHATS ET ENGAGEMENTS\n\nSection 1 : Principes directeurs des dépenses d'entreprise\nToute acquisition de prestation ou de fourniture doit faire l'objet d'un bon de commande formel avant tout début d'exécution.",
+                    "DIRECTION FINANCIÈRE — PROCÉDURE D'ACHATS ET ENGAGEMENTS (Réf: CS-FIN-2026-012)\n\nSection 1 : Principes directeurs des dépenses d'entreprise\nToute acquisition de prestation ou de fourniture doit faire l'objet d'un bon de commande formel avant tout début d'exécution.",
                     "Chapitre II : Seuils de délégation et d'approbation\nArticle 5 : Circuit de validation selon les montants\nJusqu'à 1 000 € HT : validation par le responsable de pôle direct.\nDe 1 000 € à 10 000 € HT : visa préalable du Directeur de Département.\nAu-delà de 10 000 € HT : approbation conjointe de la Direction Financière et de la Direction Générale.",
+                ],
+            ],
+            [
+                'reference_code' => 'CS-IT-2026-ENG-02',
+                'title' => 'Global Remote Work Policy & Infrastructure Guidelines',
+                'filename' => 'global_remote_work_policy_en.pdf',
+                'department' => 'Informatique & DSI',
+                'language' => 'en',
+                'description' => 'Official worldwide policy regarding remote access, data protection standards, and IT support escalation matrix.',
+                'pages' => [
+                    "CONFIANCE ENTERPRISE — GLOBAL IT POLICIES (Ref: CS-IT-2026-ENG-02)\n\nSection 1 : Global Remote Access Scope\nThis policy establishes mandatory operational protocols for all international team members connecting to corporate infrastructure.",
+                    "Chapter II : Secure Connectivity and Device Management\nArticle 6 : Authorized Devices and Software Compliance\nAll company workstations must maintain active endpoint protection, real-time disk encryption, and encrypted cloud backup synchronization at all times.",
+                    "Section 3 : Technical Support and Escalation\nArticle 11 : Incident Response SLA\nGlobal IT Helpdesk guarantees response within 30 minutes for critical infrastructure connectivity disruptions.",
                 ],
             ],
         ];
@@ -66,8 +84,10 @@ class DocumentSeeder extends Seeder
             $document = Document::updateOrCreate(
                 ['slug' => Str::slug($pdfData['title'])],
                 [
+                    'reference_code' => $pdfData['reference_code'],
                     'title' => $pdfData['title'],
                     'department' => $pdfData['department'],
+                    'language' => $pdfData['language'],
                     'description' => $pdfData['description'],
                     'file_path' => $filePath,
                     'original_filename' => $pdfData['filename'],
@@ -78,7 +98,6 @@ class DocumentSeeder extends Seeder
                 ]
             );
 
-            // Re-parse with PdfParserService to index sections cleanly
             app(PdfParserService::class)->processDocument($document);
         }
     }
@@ -110,7 +129,6 @@ class DocumentSeeder extends Seeder
             $pageObj = $objIdx++;
             $streamObj = $objIdx++;
 
-            // Split into lines for display
             $lines = explode("\n", $pageText);
             $streamCommands = ['BT', '/F1 12 Tf', '50 780 Td', '16 TL'];
             foreach ($lines as $line) {

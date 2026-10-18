@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="{{ str_replace('_', '-', app()->getLocale()) }}" class="h-full bg-[#f4f5f7]">
     <head>
-        @include('partials.head', ['title' => 'Confiance - Portail Documentaire & Recherche Interne'])
+        @include('partials.head', ['title' => 'CS Knowledge - Portail Documentaire & Base de Connaissances | Entreprise Confiance'])
     </head>
     <body class="h-full bg-[#f4f5f7] text-slate-800 antialiased selection:bg-[#081951] selection:text-white overflow-x-hidden font-sans">
         <!-- Top Confiance Accent Bar -->

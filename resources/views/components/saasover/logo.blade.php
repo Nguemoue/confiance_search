@@ -22,15 +22,15 @@
     <div class="flex flex-col">
         <div class="flex items-center gap-2">
             <span class="font-black tracking-tight text-[#081951] font-display {{ $titleSizes[$size] ?? 'text-lg' }} leading-none">
-                Confiance
+                CS Knowledge
             </span>
             <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wide uppercase bg-slate-100 text-slate-700 border border-slate-200">
-                Portail Interne
+                Entreprise Confiance
             </span>
         </div>
         @if($showSubname)
             <span class="text-[11px] font-medium text-slate-500 group-hover:text-slate-700 transition-colors tracking-tight leading-tight mt-0.5">
-                NvonchiSearch &bull; Recherche documentaire
+                NvonchiSearch &bull; Base documentaire & GED
             </span>
         @endif
     </div>
