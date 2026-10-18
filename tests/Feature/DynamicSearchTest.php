@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\Document;
+use App\Models\DocumentSection;
 use App\Models\Topic;
 use App\Models\TopicOption;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -71,6 +73,35 @@ class DynamicSearchTest extends TestCase
             ->set('search', 'novembre')
             ->assertSee('Concours Nationaux')
             ->assertDontSee('Frais de Scolarité');
+    }
+
+    public function test_can_search_pdf_documents_and_display_parent_section(): void
+    {
+        $doc = Document::create([
+            'title' => 'Accord Collectif sur le Télétravail',
+            'slug' => 'accord-teletravail',
+            'department' => 'Ressources Humaines',
+            'file_path' => 'documents/sample.pdf',
+            'original_filename' => 'sample.pdf',
+            'page_count' => 3,
+            'is_published' => true,
+            'raw_text' => 'Texte complet du document...',
+        ]);
+
+        DocumentSection::create([
+            'document_id' => $doc->id,
+            'page_number' => 2,
+            'section_title' => 'Chapitre II : Ergonomie du poste',
+            'content' => 'Conformément aux règles de l\'Article 4, l\'employeur prend en charge le matériel.',
+            'order' => 1,
+        ]);
+
+        Livewire::test('dynamic-search')
+            ->set('search', 'Article')
+            ->assertSee('Accord Collectif sur le Télétravail')
+            ->assertSee('Chapitre II : Ergonomie du poste')
+            ->assertSee('Page 2')
+            ->assertSeeHtml('<mark');
     }
 
     public function test_search_query_is_recorded_in_history(): void

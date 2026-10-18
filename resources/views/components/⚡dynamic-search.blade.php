@@ -1,6 +1,9 @@
 <?php
 
+use App\Models\Document;
+use App\Models\DocumentSection;
 use App\Models\Topic;
+use App\Services\PdfParserService;
 use Illuminate\Database\Eloquent\Collection;
 use Livewire\Attributes\Url;
 use Livewire\Component;
@@ -8,12 +11,18 @@ use Livewire\Component;
 new class extends Component
 {
     /**
-     * @var array{total_topics?: int, total_options?: int}
+     * @var array{total_topics?: int, total_options?: int, total_documents?: int, total_sections?: int}
      */
     public array $stats = [];
 
     #[Url(as: 'q', history: true)]
     public string $search = '';
+
+    /**
+     * Filter tab: 'all', 'pdf', 'guides'
+     */
+    #[Url(as: 'type')]
+    public string $activeTab = 'all';
 
     /**
      * @var list<string>
@@ -31,6 +40,11 @@ new class extends Component
         $this->search = '';
     }
 
+    public function setTab(string $tab): void
+    {
+        $this->activeTab = $tab;
+    }
+
     /**
      * Save non-empty search terms into user search history.
      */
@@ -39,7 +53,6 @@ new class extends Component
         $term = trim($this->search);
         if (mb_strlen($term) >= 2) {
             $history = session('search_history', []);
-            // Remove previous occurrence to put most recent at the top
             $history = array_values(array_filter($history, fn ($item) => mb_strtolower($item) !== mb_strtolower($term)));
             array_unshift($history, $term);
             $history = array_slice($history, 0, 10);
@@ -99,10 +112,23 @@ new class extends Component
     }
 
     /**
+     * Extract context snippet around keyword.
+     */
+    public function getSnippet(string $content): string
+    {
+        $result = PdfParserService::extractSnippet($content, $this->search, 140);
+
+        return $this->highlightText($result['snippet']);
+    }
+
+    /**
      * @return array{
      *     topics: Collection<int, Topic>|\Illuminate\Support\Collection<int, Topic>,
+     *     documents: Collection<int, Document>|\Illuminate\Support\Collection<int, Document>,
      *     totalTopicsCount: int,
      *     totalOptionsCount: int,
+     *     totalDocumentsCount: int,
+     *     totalSectionsCount: int,
      *     searchHistory: list<string>
      * }
      */
@@ -110,9 +136,20 @@ new class extends Component
     {
         $trimmedSearch = trim($this->search);
 
+        // Fetch documents matching search query
+        $documentsQuery = Document::query()
+            ->published()
+            ->with(['sections']);
+
+        if ($trimmedSearch !== '') {
+            $documentsQuery->search($trimmedSearch);
+        }
+
+        $documents = $documentsQuery->latest()->get();
+
+        // Fetch topics matching search query
         if ($trimmedSearch !== '') {
             try {
-                // Use Laravel Scout search engine
                 $topics = Topic::search($trimmedSearch)
                     ->query(function ($query): void {
                         $query->published()
@@ -122,7 +159,6 @@ new class extends Component
                     })
                     ->get();
             } catch (\Throwable $e) {
-                // Graceful fallback to Eloquent multi-column search
                 $topics = Topic::query()
                     ->published()
                     ->with([
@@ -133,7 +169,6 @@ new class extends Component
                     ->get();
             }
         } else {
-            // Standard Eloquent retrieval
             $topics = Topic::query()
                 ->published()
                 ->with([
@@ -145,11 +180,16 @@ new class extends Component
 
         $totalTopicsCount = $this->stats['total_topics'] ?? Topic::query()->published()->count();
         $totalOptionsCount = $this->stats['total_options'] ?? \App\Models\TopicOption::query()->published()->count();
+        $totalDocumentsCount = $this->stats['total_documents'] ?? Document::query()->published()->count();
+        $totalSectionsCount = $this->stats['total_sections'] ?? DocumentSection::query()->count();
 
         return [
             'topics' => $topics,
+            'documents' => $documents,
             'totalTopicsCount' => $totalTopicsCount,
             'totalOptionsCount' => $totalOptionsCount,
+            'totalDocumentsCount' => $totalDocumentsCount,
+            'totalSectionsCount' => $totalSectionsCount,
             'searchHistory' => $this->searchHistory,
         ];
     }
@@ -159,7 +199,9 @@ new class extends Component
 <div
     x-data="{
         openTopics: {},
+        openDocuments: {},
         copiedTopicId: null,
+        copiedDocId: null,
         mobileSidebarOpen: false,
 
         isTopicOpen(id) {
@@ -170,14 +212,22 @@ new class extends Component
             this.openTopics[id] = !this.isTopicOpen(id);
         },
 
-        expandAll(ids) {
-            ids.forEach(id => {
-                this.openTopics[id] = true;
-            });
+        isDocOpen(id) {
+            return !!this.openDocuments[id];
+        },
+
+        toggleDoc(id) {
+            this.openDocuments[id] = !this.isDocOpen(id);
+        },
+
+        expandAll(topicIds, docIds) {
+            (topicIds || []).forEach(id => { this.openTopics[id] = true; });
+            (docIds || []).forEach(id => { this.openDocuments[id] = true; });
         },
 
         collapseAll() {
             this.openTopics = {};
+            this.openDocuments = {};
         },
 
         copyTopicLink(id) {
@@ -187,13 +237,26 @@ new class extends Component
             setTimeout(() => { this.copiedTopicId = null; }, 2000);
         },
 
+        copyDocLink(id) {
+            const url = window.location.origin + window.location.pathname + '#doc-' + id;
+            navigator.clipboard.writeText(url);
+            this.copiedDocId = id;
+            setTimeout(() => { this.copiedDocId = null; }, 2000);
+        },
+
         init() {
             const currentSearch = ($wire.search || '').trim();
             if (currentSearch !== '') {
                 @foreach($topics as $t)
                     this.openTopics[{{ $t->id }}] = true;
                 @endforeach
+                @foreach($documents as $d)
+                    this.openDocuments[{{ $d->id }}] = true;
+                @endforeach
             } else {
+                @if($documents->first())
+                    this.openDocuments[{{ $documents->first()->id }}] = true;
+                @endif
                 @if($topics->first())
                     this.openTopics[{{ $topics->first()->id }}] = true;
                 @endif
@@ -205,6 +268,10 @@ new class extends Component
                         document.querySelectorAll('[data-topic-id]').forEach(el => {
                             const id = parseInt(el.getAttribute('data-topic-id'), 10);
                             if (id) this.openTopics[id] = true;
+                        });
+                        document.querySelectorAll('[data-doc-id]').forEach(el => {
+                            const id = parseInt(el.getAttribute('data-doc-id'), 10);
+                            if (id) this.openDocuments[id] = true;
                         });
                     });
                 }
@@ -269,12 +336,12 @@ new class extends Component
             <!-- Stats Mini Card -->
             <div class="grid grid-cols-2 gap-2">
                 <div class="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                    <div class="text-lg font-bold text-slate-900 font-display">{{ $totalTopicsCount }}</div>
-                    <div class="text-[11px] text-slate-500">Dossiers actifs</div>
+                    <div class="text-lg font-bold text-[#081951] font-display">{{ $totalDocumentsCount }}</div>
+                    <div class="text-[11px] text-slate-500">Documents PDF</div>
                 </div>
                 <div class="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                    <div class="text-lg font-bold text-[#081951] font-display">{{ $totalOptionsCount }}</div>
-                    <div class="text-[11px] text-slate-500">Procédures</div>
+                    <div class="text-lg font-bold text-slate-900 font-display">{{ $totalSectionsCount }}</div>
+                    <div class="text-[11px] text-slate-500">Sections indexées</div>
                 </div>
             </div>
 
@@ -294,7 +361,7 @@ new class extends Component
                         <i class="fas fa-layer-group text-xs"></i>
                         <span>Tous les documents</span>
                     </span>
-                    <span class="text-xs px-2 py-0.5 rounded-full {{ empty($search) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700' }}">{{ $totalTopicsCount }}</span>
+                    <span class="text-xs px-2 py-0.5 rounded-full {{ empty($search) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700' }}">{{ $totalDocumentsCount }}</span>
                 </button>
 
                 <a
@@ -317,8 +384,8 @@ new class extends Component
                     href="/admin"
                     class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
-                    <i class="fas fa-cog text-xs text-slate-400"></i>
-                    <span>Administration des documents</span>
+                    <i class="fas fa-file-pdf text-xs text-slate-400"></i>
+                    <span>Gestion des PDF</span>
                 </a>
             </div>
 
@@ -374,7 +441,7 @@ new class extends Component
     </aside>
 
     <!-- ============================================================== -->
-    <!-- DESKTOP LEFT SIDEBAR (Épurée & Fluide)                         -->
+    <!-- DESKTOP LEFT SIDEBAR                                          -->
     <!-- ============================================================== -->
     <aside class="w-72 lg:w-80 shrink-0 hidden md:flex flex-col h-screen sticky top-0 bg-white border-r border-slate-200 z-30 shadow-xs">
         <!-- Brand Header -->
@@ -389,21 +456,21 @@ new class extends Component
             <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
                 <div class="flex items-center justify-between text-xs text-slate-600 font-medium">
                     <span class="flex items-center gap-1.5 text-slate-900 font-semibold font-display">
-                        <i class="fas fa-folder-closed text-[#081951]"></i>
-                        <span>Portail Confiance</span>
+                        <i class="fas fa-file-pdf text-[#081951]"></i>
+                        <span>Recherche PDF & Sections</span>
                     </span>
                     <span class="text-[10px] font-bold text-[#081951] uppercase tracking-wider bg-[#f1f4fa] border border-[#e2e8f4] px-2 py-0.5 rounded-full">
-                        Certifié
+                        Indexé
                     </span>
                 </div>
                 <div class="grid grid-cols-2 gap-2 text-center">
                     <div class="p-2 rounded-lg bg-white border border-slate-200">
-                        <div class="text-base font-bold text-slate-900 font-display">{{ $totalTopicsCount }}</div>
-                        <div class="text-[10px] text-slate-500 uppercase font-semibold">Dossiers</div>
+                        <div class="text-base font-bold text-[#081951] font-display">{{ $totalDocumentsCount }}</div>
+                        <div class="text-[10px] text-slate-500 uppercase font-semibold">Documents PDF</div>
                     </div>
                     <div class="p-2 rounded-lg bg-white border border-slate-200">
-                        <div class="text-base font-bold text-[#081951] font-display">{{ $totalOptionsCount }}</div>
-                        <div class="text-[10px] text-slate-500 uppercase font-semibold">Procédures</div>
+                        <div class="text-base font-bold text-slate-900 font-display">{{ $totalSectionsCount }}</div>
+                        <div class="text-[10px] text-slate-500 uppercase font-semibold">Sections</div>
                     </div>
                 </div>
             </div>
@@ -423,7 +490,7 @@ new class extends Component
                         <i class="fas fa-layer-group text-xs"></i>
                         <span>Tous les documents</span>
                     </span>
-                    <span class="text-xs px-2 py-0.5 rounded-full {{ empty($search) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700' }}">{{ $totalTopicsCount }}</span>
+                    <span class="text-xs px-2 py-0.5 rounded-full {{ empty($search) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700' }}">{{ $totalDocumentsCount }}</span>
                 </button>
 
                 <a
@@ -443,11 +510,11 @@ new class extends Component
                 </a>
 
                 <a
-                    href="/admin"
+                    href="/admin/documents"
                     class="flex items-center gap-2.5 px-3.5 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-[#081951] hover:bg-slate-50 transition-colors"
                 >
-                    <i class="fas fa-cog text-xs text-slate-400"></i>
-                    <span>Administration des documents</span>
+                    <i class="fas fa-file-arrow-up text-xs text-[#081951]"></i>
+                    <span>Téléverser des PDF</span>
                 </a>
             </div>
 
@@ -544,14 +611,13 @@ new class extends Component
                     type="text"
                     wire:model.live.debounce.250ms="search"
                     @keydown.enter="recordSearch"
-                    placeholder="Rechercher une démarche, un mot-clé ou un document (ex: télétravail, mutuelle, VPN...)"
+                    placeholder="Rechercher un terme, un article ou un mot-clé dans les documents PDF (ex: Article, indemnité, télétravail)..."
                     class="w-full bg-transparent text-sm sm:text-base text-slate-900 placeholder-slate-400 focus:outline-hidden font-sans"
                     autofocus
                 />
 
-                <!-- Controls inside input: Loading, Clear, Shortcut -->
+                <!-- Controls inside input -->
                 <div class="flex items-center gap-2 pl-2">
-                    <!-- Loading Indicator -->
                     <div wire:loading wire:target="search" class="text-[#081951]">
                         <i class="fas fa-circle-notch fa-spin text-sm"></i>
                     </div>
@@ -576,99 +642,89 @@ new class extends Component
             <!-- Top Right Action Controls -->
             <div class="flex items-center gap-2">
                 <a
-                    href="/admin"
+                    href="/admin/documents"
                     class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-[#081951] hover:bg-[#0e2454] text-white transition-all shadow-xs"
-                    title="Administration documentaire"
+                    title="Gérer et ajouter des fichiers PDF"
                 >
-                    <i class="fas fa-folder-gear text-xs"></i>
-                    <span class="hidden sm:inline">Administration</span>
+                    <i class="fas fa-upload text-xs"></i>
+                    <span class="hidden sm:inline">Ajouter un PDF</span>
                 </a>
             </div>
         </header>
 
         <!-- Main Body Flow -->
         <div class="flex-1 px-4 sm:px-6 lg:px-8 py-6 max-w-6xl w-full mx-auto space-y-6">
-            <!-- Hero Section Dédiée à l'Entreprise Confiance -->
+            <!-- Hero Section -->
             <div class="rounded-2xl bg-white border border-slate-200 p-6 sm:p-8 shadow-xs">
                 <div class="max-w-3xl">
-                    <!-- Eyebrow Badges -->
                     <div class="flex flex-wrap items-center gap-2 mb-3">
-                        <x-saasover.verified-badge text="Base Documentaire & Procédures Officielles" />
+                        <x-saasover.verified-badge text="Recherche Textuelle & Périmétrique dans les PDF" />
                         <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
                             Entreprise Confiance
                         </span>
                     </div>
 
-                    <!-- Hero Title -->
                     <h1 class="text-2xl sm:text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight leading-tight font-display">
-                        Documentation & procédures internes <br class="hidden sm:inline" />
-                        <span class="text-[#081951]">Entreprise Confiance</span>
+                        Recherche dans le contenu des documents PDF <br class="hidden sm:inline" />
+                        <span class="text-[#081951]">avec repérage des sections parentes</span>
                     </h1>
 
                     <p class="mt-3 text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
-                        Recherchez instantanément parmi l'ensemble des directives, modes opératoires validés, guides RH, protocoles IT et démarches de l'entreprise. <strong class="text-slate-900 font-semibold">{{ $totalOptionsCount }} procédures vérifiées</strong> actuellement indexées.
+                        Chaque mot-clé recherché extrait automatiquement la <strong>section parente</strong>, la <strong>page exacte</strong> et le <strong>contexte périphérique</strong> autour du passage dans le document officiel.
                     </p>
 
                     <!-- Trust Chips -->
                     <div class="mt-5 flex flex-wrap items-center gap-2 text-xs">
                         <x-saasover.hero-float
-                            title="Recherche Instantanée"
-                            subtitle="Plein texte dans les documents"
+                            title="Sections & Articles"
+                            subtitle="Affichage du titre parent exact"
                         />
                         <x-saasover.hero-float
-                            title="Documents Certifiés"
-                            subtitle="Validés par les directions métiers"
+                            title="Contexte Périphérique"
+                            subtitle="Phrase complète autour du terme"
                         />
                         <x-saasover.hero-float
-                            title="Accès Direct"
-                            subtitle="Liens rapides vers les applications"
+                            title="Ouverture Directe"
+                            subtitle="Lien vers la bonne page du PDF"
                         />
                     </div>
                 </div>
             </div>
 
-            <!-- Metrics Strip -->
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
-                    <div class="flex items-center justify-between text-slate-500 text-xs mb-1">
-                        <span>Dossiers</span>
-                        <i class="fas fa-folder-closed text-[#081951] text-xs"></i>
-                    </div>
-                    <div class="text-xl font-bold text-slate-900 font-display">{{ $totalTopicsCount }}</div>
-                    <div class="text-[10px] text-slate-500 mt-0.5 font-medium">Indexés dans la base</div>
-                </div>
+            <!-- Filter Tabs (Tous / Documents PDF / Fiches Métiers) -->
+            <div class="flex items-center gap-2 border-b border-slate-200 pb-2">
+                <button
+                    type="button"
+                    wire:click="setTab('all')"
+                    class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'all' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
+                >
+                    <i class="fas fa-layer-group text-[10px] mr-1.5"></i>
+                    <span>Tout afficher</span>
+                    <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'all' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $documents->count() + $topics->count() }}</span>
+                </button>
 
-                <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
-                    <div class="flex items-center justify-between text-slate-500 text-xs mb-1">
-                        <span>Procédures</span>
-                        <i class="fas fa-file-lines text-[#081951] text-xs"></i>
-                    </div>
-                    <div class="text-xl font-bold text-[#081951] font-display">{{ $totalOptionsCount }}</div>
-                    <div class="text-[10px] text-slate-500 mt-0.5">Modes opératoires</div>
-                </div>
+                <button
+                    type="button"
+                    wire:click="setTab('pdf')"
+                    class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'pdf' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
+                >
+                    <i class="fas fa-file-pdf text-[10px] mr-1.5 text-rose-500"></i>
+                    <span>Documents PDF</span>
+                    <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'pdf' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $documents->count() }}</span>
+                </button>
 
-                <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
-                    <div class="flex items-center justify-between text-slate-500 text-xs mb-1">
-                        <span>Vélocité</span>
-                        <i class="fas fa-bolt text-slate-400 text-xs"></i>
-                    </div>
-                    <div class="text-xl font-bold text-slate-900 font-display">&lt; 80ms</div>
-                    <div class="text-[10px] text-slate-500 mt-0.5 font-medium">Recherche plein texte</div>
-                </div>
-
-                <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
-                    <div class="flex items-center justify-between text-slate-500 text-xs mb-1">
-                        <span>Directions</span>
-                        <i class="fas fa-sitemap text-[#081951] text-xs"></i>
-                    </div>
-                    <div class="text-xl font-bold text-slate-900 font-display">100%</div>
-                    <div class="text-[10px] text-slate-500 mt-0.5">RH, IT, Finance & Opérations</div>
-                </div>
+                <button
+                    type="button"
+                    wire:click="setTab('guides')"
+                    class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {{ $activeTab === 'guides' ? 'bg-[#081951] text-white shadow-2xs' : 'bg-white hover:bg-slate-50 text-slate-600 border border-slate-200' }}"
+                >
+                    <i class="fas fa-folder-open text-[10px] mr-1.5 text-blue-500"></i>
+                    <span>Fiches Métiers & FAQ</span>
+                    <span class="ml-1.5 text-[10px] px-1.5 py-0.2 rounded-full {{ $activeTab === 'guides' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600' }}">{{ $topics->count() }}</span>
+                </button>
             </div>
 
-            <!-- ============================================================== -->
-            <!-- SECTION HISTORIQUE DE RECHERCHE                                -->
-            <!-- ============================================================== -->
+            <!-- Historique des Recherches -->
             <div class="space-y-2">
                 <div class="flex items-center justify-between text-xs text-slate-500">
                     <div class="flex items-center gap-1.5">
@@ -677,7 +733,7 @@ new class extends Component
                             @if(!empty($searchHistory))
                                 VOS RECHERCHES RÉCENTES
                             @else
-                                RECHERCHES SUGGÉRÉES
+                                RECHERCHES SUGGÉRÉES DANS LES DOCUMENTS
                             @endif
                         </span>
                     </div>
@@ -720,13 +776,13 @@ new class extends Component
                     @else
                         @php
                             $suggestions = [
+                                'Article',
                                 'Télétravail',
-                                'Notes de frais',
-                                'Congés payés',
-                                'VPN & Réseau',
-                                'Mutuelle santé',
-                                'Procédure achat',
-                                'Onboarding'
+                                'Indemnité',
+                                'VPN',
+                                'Mot de passe',
+                                'Achats',
+                                'Bon de commande'
                             ];
                         @endphp
                         @foreach($suggestions as $suggested)
@@ -743,38 +799,37 @@ new class extends Component
                 </div>
             </div>
 
-            <!-- Active Results Bar & Client-side Accordion Actions -->
+            <!-- Active Results Bar -->
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-500 pt-2 border-t border-slate-200">
                 <div class="flex items-center gap-2">
                     @if(!empty($search))
                         <span>
-                            <strong class="text-slate-900">{{ $topics->count() }}</strong> dossier(s) trouvé(s) pour « <strong class="text-[#081951]">{{ $search }}</strong> »
+                            Résultats pour « <strong class="text-[#081951]">{{ $search }}</strong> » :
+                            <strong class="text-slate-900">{{ $documents->count() }}</strong> PDF et <strong class="text-slate-900">{{ $topics->count() }}</strong> fiches trouvées
                         </span>
                     @else
                         <span>
-                            Affichage des <strong class="text-slate-900">{{ $topics->count() }}</strong> dossiers documentaires
+                            Affichage de <strong class="text-slate-900">{{ $documents->count() }}</strong> documents PDF et <strong class="text-slate-900">{{ $topics->count() }}</strong> fiches métiers
                         </span>
                     @endif
                 </div>
 
                 <div class="flex items-center gap-3 self-end sm:self-auto">
-                    @if($topics->isNotEmpty())
-                        <button
-                            type="button"
-                            @click="expandAll([{{ $topics->pluck('id')->implode(',') }}])"
-                            class="text-xs font-medium text-slate-600 hover:text-[#081951] transition-colors cursor-pointer"
-                        >
-                            Tout déplier
-                        </button>
-                        <span class="text-slate-300">|</span>
-                        <button
-                            type="button"
-                            @click="collapseAll()"
-                            class="text-xs font-medium text-slate-600 hover:text-[#081951] transition-colors cursor-pointer"
-                        >
-                            Tout replier
-                        </button>
-                    @endif
+                    <button
+                        type="button"
+                        @click="expandAll([{{ $topics->pluck('id')->implode(',') }}], [{{ $documents->pluck('id')->implode(',') }}])"
+                        class="text-xs font-medium text-slate-600 hover:text-[#081951] transition-colors cursor-pointer"
+                    >
+                        Tout déplier
+                    </button>
+                    <span class="text-slate-300">|</span>
+                    <button
+                        type="button"
+                        @click="collapseAll()"
+                        class="text-xs font-medium text-slate-600 hover:text-[#081951] transition-colors cursor-pointer"
+                    >
+                        Tout replier
+                    </button>
 
                     @if(!empty($search))
                         <span class="text-slate-300">|</span>
@@ -789,175 +844,347 @@ new class extends Component
                 </div>
             </div>
 
-            <!-- Topics & Procedures Cards List -->
-            <div class="space-y-3.5">
-                @forelse($topics as $topic)
-                    <div
-                        data-topic-id="{{ $topic->id }}"
-                        id="procedure-{{ $topic->id }}"
-                        class="bg-white rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition-all duration-150 overflow-hidden"
-                    >
-                        <!-- Topic Header (Accordion Trigger) -->
-                        <div
-                            @click="toggleTopic({{ $topic->id }})"
-                            class="p-4 sm:p-5 cursor-pointer flex items-start justify-between gap-4 select-none hover:bg-slate-50/60 transition-colors"
-                        >
-                            <div class="flex items-start gap-3.5">
-                                <!-- Confiance Mark Icon -->
-                                <div class="shrink-0 flex flex-col items-center gap-1">
-                                    <x-saasover.mark size="size-9" />
-                                    <span class="text-[10px] font-mono text-slate-400">
-                                        #{{ str_pad($topic->id, 2, '0', STR_PAD_LEFT) }}
-                                    </span>
-                                </div>
-
-                                <div>
-                                    <div class="flex flex-wrap items-center gap-2 mb-1">
-                                        <h2 class="text-base font-bold text-slate-900 font-display">
-                                            {!! $this->highlightText($topic->title) !!}
-                                        </h2>
-                                        <x-saasover.verified-badge compact="true" text="Document validé Confiance" />
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                                            {{ $topic->options->count() }} démarche(s)
-                                        </span>
-                                    </div>
-
-                                    @if($topic->description)
-                                        <p class="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
-                                            {!! $this->highlightText($topic->description) !!}
-                                        </p>
-                                    @endif
-                                </div>
-                            </div>
-
-                            <!-- Right Controls: Share link & Chevron -->
-                            <div class="shrink-0 flex items-center gap-2 pt-1">
-                                <button
-                                    type="button"
-                                    @click.stop="copyTopicLink({{ $topic->id }})"
-                                    class="p-1.5 rounded-lg text-slate-400 hover:text-[#081951] hover:bg-slate-100 transition-colors cursor-pointer"
-                                    title="Copier le lien direct vers ce document"
-                                >
-                                    <template x-if="copiedTopicId === {{ $topic->id }}">
-                                        <span class="text-[11px] font-bold text-[#081951]">Lien copié !</span>
-                                    </template>
-                                    <template x-if="copiedTopicId !== {{ $topic->id }}">
-                                        <i class="fas fa-link text-xs"></i>
-                                    </template>
-                                </button>
-
-                                <div class="text-slate-400">
-                                    <i
-                                        class="fas fa-chevron-down text-xs transform transition-transform duration-200"
-                                        :class="isTopicOpen({{ $topic->id }}) ? 'rotate-180 text-[#081951]' : 'text-slate-400'"
-                                    ></i>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Accordion Expansion: Detailed Procedures & Documents -->
-                        <div
-                            x-show="isTopicOpen({{ $topic->id }})"
-                            x-transition:enter="transition ease-out duration-150"
-                            x-transition:enter-start="opacity-0 -translate-y-1"
-                            x-transition:enter-end="opacity-100 translate-y-0"
-                            x-transition:leave="transition ease-in duration-100"
-                            x-transition:leave-start="opacity-100 translate-y-0"
-                            x-transition:leave-end="opacity-0 -translate-y-1"
-                            class="border-t border-slate-100 bg-[#f8fafc] p-4 sm:p-5 space-y-3"
-                        >
-                            @forelse($topic->options as $option)
-                                <div class="bg-white rounded-lg p-4 border border-slate-200 shadow-2xs">
-                                    <div class="flex items-start justify-between gap-3 mb-2">
-                                        <h3 class="text-sm font-bold text-slate-900 flex items-center gap-2 font-display">
-                                            <span class="shrink-0 size-2 rounded-full bg-[#081951]"></span>
-                                            <span>{!! $this->highlightText($option->title) !!}</span>
-                                        </h3>
-
-                                        <span class="shrink-0 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-slate-100 text-slate-700 border border-slate-200">
-                                            {{ match($option->type) {
-                                                'faq' => 'Procédure Officielle',
-                                                'link' => 'Outil / Service Métier',
-                                                'download' => 'Document à télécharger',
-                                                'contact' => 'Référent Interne',
-                                                default => $option->type,
-                                            } }}
-                                        </span>
-                                    </div>
-
-                                    @if($option->content)
-                                        <div class="text-xs sm:text-sm text-slate-600 leading-relaxed space-y-1.5 font-sans">
-                                            {!! nl2br($this->highlightText($option->content)) !!}
-                                        </div>
-                                    @endif
-
-                                    @if($option->action_url)
-                                        <div class="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
-                                            <a
-                                                href="{{ $option->action_url }}"
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                class="group inline-flex items-center gap-1.5 bg-[#081951] hover:bg-[#0e2454] text-white font-medium px-3.5 py-1.5 rounded-lg text-xs transition-colors shadow-2xs"
-                                            >
-                                                @if($option->type === 'download')
-                                                    <i class="fas fa-download text-xs"></i>
-                                                    <span>Télécharger le document</span>
-                                                @elseif($option->type === 'contact')
-                                                    <i class="fas fa-phone text-xs"></i>
-                                                    <span>Joindre le référent</span>
-                                                @else
-                                                    <span>Accéder à l'application</span>
-                                                    <i class="fas fa-arrow-right text-xs group-hover:translate-x-0.5 transition-transform"></i>
-                                                @endif
-                                            </a>
-                                        </div>
-                                    @endif
-                                </div>
-                            @empty
-                                <p class="text-xs text-slate-400 italic py-2">
-                                    Aucun texte ou document détaillé n’est encore renseigné pour cette thématique.
-                                </p>
-                            @endforelse
-                        </div>
+            <!-- ============================================================== -->
+            <!-- 1. SECTION DOCUMENTS PDF (Contenu Textuel & Sections Parentes) -->
+            <!-- ============================================================== -->
+            @if($activeTab === 'all' || $activeTab === 'pdf')
+                <div class="space-y-4">
+                    <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
+                        <i class="fas fa-file-pdf text-rose-600"></i>
+                        <span>Documents PDF Officiels (Recherche en Texte Intégral & Sections)</span>
                     </div>
-                @empty
-                    <!-- Empty State -->
-                    <div class="bg-white rounded-2xl border border-slate-200 p-8 sm:p-12 text-center max-w-lg mx-auto shadow-xs">
-                        <div class="size-12 mx-auto mb-3 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center text-xl">
-                            <i class="fas fa-magnifying-glass"></i>
-                        </div>
-                        <h3 class="text-base font-bold text-slate-900 font-display">Aucun document correspondant</h3>
-                        <p class="mt-1.5 text-xs text-slate-500 leading-relaxed font-sans">
-                            Aucun document ou texte ne contient le terme « <span class="font-semibold text-[#081951]">{{ $search }}</span> ». Essayez avec un mot-clé plus général.
-                        </p>
-                        <div class="mt-5 flex justify-center">
-                            <button
-                                type="button"
-                                wire:click="clearFilters"
-                                class="px-4 py-2 rounded-xl text-xs font-semibold bg-[#081951] text-white hover:bg-[#0e2454] transition-colors shadow-xs cursor-pointer"
+
+                    @forelse($documents as $doc)
+                        @php
+                            $pdfUrl = Storage::url($doc->file_path);
+                            // Filter matching sections if search query is active
+                            $matchingSections = !empty($search) 
+                                ? $doc->sections->filter(fn ($s) => mb_stripos($s->content, $search) !== false || mb_stripos($s->section_title, $search) !== false)
+                                : $doc->sections;
+                        @endphp
+                        <div
+                            data-doc-id="{{ $doc->id }}"
+                            id="doc-{{ $doc->id }}"
+                            class="bg-white rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition-all duration-150 overflow-hidden"
+                        >
+                            <!-- Document Header Trigger -->
+                            <div
+                                @click="toggleDoc({{ $doc->id }})"
+                                class="p-4 sm:p-5 cursor-pointer flex items-start justify-between gap-4 select-none hover:bg-slate-50/60 transition-colors"
                             >
-                                Réinitialiser la recherche
-                            </button>
+                                <div class="flex items-start gap-3.5">
+                                    <div class="shrink-0 size-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center border border-rose-200 shadow-2xs">
+                                        <i class="fas fa-file-pdf text-lg"></i>
+                                    </div>
+
+                                    <div>
+                                        <div class="flex flex-wrap items-center gap-2 mb-1">
+                                            <h2 class="text-base font-bold text-slate-900 font-display">
+                                                {!! $this->highlightText($doc->title) !!}
+                                            </h2>
+                                            @if($doc->department)
+                                                <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-[#f1f4fa] text-[#081951] border border-[#e2e8f4]">
+                                                    {{ $doc->department }}
+                                                </span>
+                                            @endif
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                                                {{ $doc->page_count }} page(s) &bull; {{ $doc->formatted_file_size }}
+                                            </span>
+                                            @if(!empty($search) && $matchingSections->isNotEmpty())
+                                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                                                    {{ $matchingSections->count() }} passage(s) pertinent(s)
+                                                </span>
+                                            @endif
+                                        </div>
+
+                                        @if($doc->description)
+                                            <p class="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
+                                                {!! $this->highlightText($doc->description) !!}
+                                            </p>
+                                        @endif
+                                    </div>
+                                </div>
+
+                                <!-- Right Controls -->
+                                <div class="shrink-0 flex items-center gap-2 pt-1">
+                                    <a
+                                        href="{{ $pdfUrl }}"
+                                        target="_blank"
+                                        @click.stop
+                                        class="p-1.5 rounded-lg text-slate-400 hover:text-[#081951] hover:bg-slate-100 transition-colors cursor-pointer"
+                                        title="Ouvrir le PDF complet dans un nouvel onglet"
+                                    >
+                                        <i class="fas fa-arrow-up-right-from-square text-xs"></i>
+                                    </a>
+
+                                    <button
+                                        type="button"
+                                        @click.stop="copyDocLink({{ $doc->id }})"
+                                        class="p-1.5 rounded-lg text-slate-400 hover:text-[#081951] hover:bg-slate-100 transition-colors cursor-pointer"
+                                        title="Copier le lien direct vers ce document"
+                                    >
+                                        <template x-if="copiedDocId === {{ $doc->id }}">
+                                            <span class="text-[11px] font-bold text-[#081951]">Lien copié !</span>
+                                        </template>
+                                        <template x-if="copiedDocId !== {{ $doc->id }}">
+                                            <i class="fas fa-link text-xs"></i>
+                                        </template>
+                                    </button>
+
+                                    <div class="text-slate-400">
+                                        <i
+                                            class="fas fa-chevron-down text-xs transform transition-transform duration-200"
+                                            :class="isDocOpen({{ $doc->id }}) ? 'rotate-180 text-[#081951]' : 'text-slate-400'"
+                                        ></i>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Document Sections & Snippets Accordion -->
+                            <div
+                                x-show="isDocOpen({{ $doc->id }})"
+                                x-transition:enter="transition ease-out duration-150"
+                                x-transition:enter-start="opacity-0 -translate-y-1"
+                                x-transition:enter-end="opacity-100 translate-y-0"
+                                x-transition:leave="transition ease-in duration-100"
+                                x-transition:leave-start="opacity-100 translate-y-0"
+                                x-transition:leave-end="opacity-0 -translate-y-1"
+                                class="border-t border-slate-100 bg-[#f8fafc] p-4 sm:p-5 space-y-3"
+                            >
+                                <div class="text-xs text-slate-500 font-medium flex items-center justify-between pb-1">
+                                    <span>
+                                        @if(!empty($search))
+                                            Sections et paragraphes du document contenant le terme « <strong class="text-[#081951]">{{ $search }}</strong> » :
+                                        @else
+                                            Contenu et sections extraites du document :
+                                        @endif
+                                    </span>
+                                    <a
+                                        href="{{ $pdfUrl }}"
+                                        download="{{ $doc->original_filename }}"
+                                        class="inline-flex items-center gap-1.5 text-xs text-[#081951] hover:underline font-semibold"
+                                    >
+                                        <i class="fas fa-download text-[10px]"></i>
+                                        <span>Télécharger le fichier original</span>
+                                    </a>
+                                </div>
+
+                                @forelse($matchingSections as $section)
+                                    <div class="bg-white rounded-lg p-4 border border-slate-200 shadow-2xs space-y-2">
+                                        <!-- Parent Breadcrumb & Page Info -->
+                                        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                                            <div class="flex items-center gap-2 text-xs">
+                                                <span class="inline-flex items-center gap-1 font-bold text-slate-900 font-display">
+                                                    <i class="fas fa-location-dot text-[#081951] text-xs"></i>
+                                                    <span>{{ $section->section_title ?: 'Section du document' }}</span>
+                                                </span>
+                                            </div>
+
+                                            <div class="flex items-center gap-2">
+                                                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-100 text-slate-700 border border-slate-200">
+                                                    Page {{ $section->page_number }}
+                                                </span>
+                                                <a
+                                                    href="{{ $pdfUrl }}#page={{ $section->page_number }}"
+                                                    target="_blank"
+                                                    class="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-[#f1f4fa] hover:bg-[#e2e8f4] text-[#081951] transition-colors"
+                                                    title="Ouvrir le PDF directement à la page {{ $section->page_number }}"
+                                                >
+                                                    <i class="fas fa-book-open-reader text-[10px]"></i>
+                                                    <span>Page {{ $section->page_number }} &rarr;</span>
+                                                </a>
+                                            </div>
+                                        </div>
+
+                                        <!-- Contextual Periphery Snippet -->
+                                        <div class="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans pt-1">
+                                            @if(!empty($search))
+                                                <p class="italic bg-slate-50/70 p-3 rounded-md border border-slate-200/60">
+                                                    « {!! $this->getSnippet($section->content) !!} »
+                                                </p>
+                                            @else
+                                                <p>{!! nl2br(e($section->content)) !!}</p>
+                                            @endif
+                                        </div>
+                                    </div>
+                                @empty
+                                    <p class="text-xs text-slate-400 italic py-2">
+                                        Aucun paragraphe spécifique ne correspond au filtre actif.
+                                    </p>
+                                @endforelse
+                            </div>
                         </div>
+                    @empty
+                        <div class="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-500 text-xs">
+                            Aucun document PDF ne correspond à votre recherche.
+                        </div>
+                    @endforelse
+                </div>
+            @endif
+
+            <!-- ============================================================== -->
+            <!-- 2. SECTION FICHES MÉTIERS & PROCÉDURES                         -->
+            <!-- ============================================================== -->
+            @if($activeTab === 'all' || $activeTab === 'guides')
+                <div class="space-y-4 pt-2">
+                    <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
+                        <i class="fas fa-folder-tree text-blue-600"></i>
+                        <span>Fiches Métiers, FAQ & Procédures Collaborateurs</span>
                     </div>
-                @endforelse
-            </div>
+
+                    <div class="space-y-3.5">
+                        @forelse($topics as $topic)
+                            <div
+                                data-topic-id="{{ $topic->id }}"
+                                id="procedure-{{ $topic->id }}"
+                                class="bg-white rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition-all duration-150 overflow-hidden"
+                            >
+                                <!-- Topic Header -->
+                                <div
+                                    @click="toggleTopic({{ $topic->id }})"
+                                    class="p-4 sm:p-5 cursor-pointer flex items-start justify-between gap-4 select-none hover:bg-slate-50/60 transition-colors"
+                                >
+                                    <div class="flex items-start gap-3.5">
+                                        <div class="shrink-0 flex flex-col items-center gap-1">
+                                            <x-saasover.mark size="size-9" />
+                                            <span class="text-[10px] font-mono text-slate-400">
+                                                #{{ str_pad($topic->id, 2, '0', STR_PAD_LEFT) }}
+                                            </span>
+                                        </div>
+
+                                        <div>
+                                            <div class="flex flex-wrap items-center gap-2 mb-1">
+                                                <h2 class="text-base font-bold text-slate-900 font-display">
+                                                    {!! $this->highlightText($topic->title) !!}
+                                                </h2>
+                                                <x-saasover.verified-badge compact="true" text="Fiche validée Confiance" />
+                                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                                                    {{ $topic->options->count() }} démarche(s)
+                                                </span>
+                                            </div>
+
+                                            @if($topic->description)
+                                                <p class="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
+                                                    {!! $this->highlightText($topic->description) !!}
+                                                </p>
+                                            @endif
+                                        </div>
+                                    </div>
+
+                                    <!-- Right Controls -->
+                                    <div class="shrink-0 flex items-center gap-2 pt-1">
+                                        <button
+                                            type="button"
+                                            @click.stop="copyTopicLink({{ $topic->id }})"
+                                            class="p-1.5 rounded-lg text-slate-400 hover:text-[#081951] hover:bg-slate-100 transition-colors cursor-pointer"
+                                            title="Copier le lien direct vers cette fiche"
+                                        >
+                                            <template x-if="copiedTopicId === {{ $topic->id }}">
+                                                <span class="text-[11px] font-bold text-[#081951]">Lien copié !</span>
+                                            </template>
+                                            <template x-if="copiedTopicId !== {{ $topic->id }}">
+                                                <i class="fas fa-link text-xs"></i>
+                                            </template>
+                                        </button>
+
+                                        <div class="text-slate-400">
+                                            <i
+                                                class="fas fa-chevron-down text-xs transform transition-transform duration-200"
+                                                :class="isTopicOpen({{ $topic->id }}) ? 'rotate-180 text-[#081951]' : 'text-slate-400'"
+                                            ></i>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Accordion Options -->
+                                <div
+                                    x-show="isTopicOpen({{ $topic->id }})"
+                                    x-transition:enter="transition ease-out duration-150"
+                                    x-transition:enter-start="opacity-0 -translate-y-1"
+                                    x-transition:enter-end="opacity-100 translate-y-0"
+                                    x-transition:leave="transition ease-in duration-100"
+                                    x-transition:leave-start="opacity-100 translate-y-0"
+                                    x-transition:leave-end="opacity-0 -translate-y-1"
+                                    class="border-t border-slate-100 bg-[#f8fafc] p-4 sm:p-5 space-y-3"
+                                >
+                                    @forelse($topic->options as $option)
+                                        <div class="bg-white rounded-lg p-4 border border-slate-200 shadow-2xs">
+                                            <div class="flex items-start justify-between gap-3 mb-2">
+                                                <h3 class="text-sm font-bold text-slate-900 flex items-center gap-2 font-display">
+                                                    <span class="shrink-0 size-2 rounded-full bg-[#081951]"></span>
+                                                    <span>{!! $this->highlightText($option->title) !!}</span>
+                                                </h3>
+
+                                                <span class="shrink-0 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-slate-100 text-slate-700 border border-slate-200">
+                                                    {{ match($option->type) {
+                                                        'faq' => 'Procédure Officielle',
+                                                        'link' => 'Outil / Service Métier',
+                                                        'download' => 'Document à télécharger',
+                                                        'contact' => 'Référent Interne',
+                                                        default => $option->type,
+                                                    } }}
+                                                </span>
+                                            </div>
+
+                                            @if($option->content)
+                                                <div class="text-xs sm:text-sm text-slate-600 leading-relaxed space-y-1.5 font-sans">
+                                                    {!! nl2br($this->highlightText($option->content)) !!}
+                                                </div>
+                                            @endif
+
+                                            @if($option->action_url)
+                                                <div class="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
+                                                    <a
+                                                        href="{{ $option->action_url }}"
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        class="group inline-flex items-center gap-1.5 bg-[#081951] hover:bg-[#0e2454] text-white font-medium px-3.5 py-1.5 rounded-lg text-xs transition-colors shadow-2xs"
+                                                    >
+                                                        @if($option->type === 'download')
+                                                            <i class="fas fa-download text-xs"></i>
+                                                            <span>Télécharger le document</span>
+                                                        @elseif($option->type === 'contact')
+                                                            <i class="fas fa-phone text-xs"></i>
+                                                            <span>Joindre le référent</span>
+                                                        @else
+                                                            <span>Accéder à l'application</span>
+                                                            <i class="fas fa-arrow-right text-xs group-hover:translate-x-0.5 transition-transform"></i>
+                                                        @endif
+                                                    </a>
+                                                </div>
+                                            @endif
+                                        </div>
+                                    @empty
+                                        <p class="text-xs text-slate-400 italic py-2">
+                                            Aucun texte ou document détaillé n’est encore renseigné pour cette thématique.
+                                        </p>
+                                    @endforelse
+                                </div>
+                            </div>
+                        @empty
+                            <div class="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-500 text-xs">
+                                Aucune fiche métier ne correspond à votre recherche.
+                            </div>
+                        @endforelse
+                    </div>
+                </div>
+            @endif
 
             <!-- Call To Action Banner -->
             <div class="rounded-2xl bg-[#081951] p-6 sm:p-8 text-white text-center shadow-xs">
                 <h2 class="text-xl sm:text-2xl font-bold mb-2 font-display">
-                    Un document manque ou doit être actualisé ?
+                    Un document PDF manque ou doit être actualisé ?
                 </h2>
                 <p class="text-slate-300 text-xs sm:text-sm max-w-xl mx-auto mb-6 leading-relaxed font-sans">
-                    Les référents de pôle et gestionnaires documentaires de l'entreprise Confiance peuvent actualiser les modes opératoires et ajouter des documents directement depuis le panneau d'administration.
+                    Les référents de pôle de l'entreprise Confiance peuvent téléverser de nouveaux fichiers PDF ou mettre à jour les documents existants directement dans l'espace gestionnaire.
                 </p>
                 <div class="flex flex-wrap justify-center gap-3">
                     <a
-                        href="/admin/topics"
+                        href="/admin/documents/create"
                         class="bg-white text-[#081951] hover:bg-slate-100 font-bold px-5 py-2 rounded-xl transition-colors shadow-xs inline-flex items-center gap-2 text-xs sm:text-sm"
                     >
-                        <i class="fas fa-plus text-xs"></i>
-                        <span>Gérer les documents</span>
+                        <i class="fas fa-upload text-xs"></i>
+                        <span>Téléverser un nouveau PDF</span>
                     </a>
                     <a
                         href="{{ route('contact') }}"

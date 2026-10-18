@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Document;
+use App\Models\DocumentSection;
 use App\Models\Topic;
 use App\Models\TopicOption;
 use Illuminate\Http\Request;
@@ -17,6 +19,8 @@ class HomeController extends Controller
         $stats = [
             'total_topics' => Topic::query()->published()->count(),
             'total_options' => TopicOption::query()->published()->count(),
+            'total_documents' => Document::query()->published()->count(),
+            'total_sections' => DocumentSection::query()->count(),
         ];
 
         return view('home', [
