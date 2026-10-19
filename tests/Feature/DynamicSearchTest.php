@@ -150,4 +150,77 @@ class DynamicSearchTest extends TestCase
 
         $this->assertEquals([], session('search_history'));
     }
+
+    public function test_default_view_displays_only_document_headers_without_subsections(): void
+    {
+        $doc = Document::create([
+            'title' => 'Politique Sécurité Informatique 2026',
+            'slug' => 'politique-securite-2026',
+            'reference_code' => 'CS-DSI-2026-999',
+            'language' => 'fr',
+            'file_path' => 'documents/sec.pdf',
+            'original_filename' => 'sec.pdf',
+            'page_count' => 5,
+            'is_published' => true,
+        ]);
+
+        DocumentSection::create([
+            'document_id' => $doc->id,
+            'page_number' => 1,
+            'section_title' => 'Article 12 : Mots de passe et Authentification',
+            'content' => 'Les mots de passe doivent comporter au moins 14 caractères alphanumériques.',
+            'reference_label' => 'CS-DSI-2026-999 § P.1 — Article 12',
+            'order' => 1,
+        ]);
+
+        // Default state (no search): Header is visible, but subsection content is not rendered
+        Livewire::test('dynamic-search')
+            ->assertSee('Politique Sécurité Informatique 2026')
+            ->assertSee('CS-DSI-2026-999')
+            ->assertDontSee('Les mots de passe doivent comporter au moins 14 caractères alphanumériques.');
+
+        // When searching, matching sub-sections become visible
+        Livewire::test('dynamic-search')
+            ->set('search', 'alphanumériques')
+            ->assertSee('CS-DSI-2026-999')
+            ->assertSee('Article 12 : Mots de passe et Authentification')
+            ->assertSee('14 caractères');
+    }
+
+    public function test_language_selector_filters_documents_strictly_by_chosen_language(): void
+    {
+        Document::create([
+            'title' => 'Document Français Spécifique',
+            'slug' => 'doc-fr',
+            'reference_code' => 'CS-FR-001',
+            'language' => 'fr',
+            'file_path' => 'documents/fr.pdf',
+            'original_filename' => 'fr.pdf',
+            'page_count' => 1,
+            'is_published' => true,
+        ]);
+
+        Document::create([
+            'title' => 'Specific English Document',
+            'slug' => 'doc-en',
+            'reference_code' => 'CS-EN-002',
+            'language' => 'en',
+            'file_path' => 'documents/en.pdf',
+            'original_filename' => 'en.pdf',
+            'page_count' => 1,
+            'is_published' => true,
+        ]);
+
+        // When language is set to 'fr', only French documents appear
+        Livewire::test('dynamic-search')
+            ->call('switchLanguageAndLocale', 'fr')
+            ->assertSee('Document Français Spécifique')
+            ->assertDontSee('Specific English Document');
+
+        // When language is switched to 'en', only English documents appear
+        Livewire::test('dynamic-search')
+            ->call('switchLanguageAndLocale', 'en')
+            ->assertSee('Specific English Document')
+            ->assertDontSee('Document Français Spécifique');
+    }
 }

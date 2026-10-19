@@ -27,22 +27,22 @@
 
         <!-- Right Menu: Language Switcher & Admin Panel -->
         <div class="flex items-center gap-3">
-            <!-- Language Switcher FR / EN -->
-            <div class="flex items-center rounded-lg border border-slate-200 p-0.5 bg-slate-50 text-xs font-semibold">
-                <a
-                    href="{{ route('locale.switch', 'fr') }}"
-                    class="px-2 py-1 rounded-md transition-colors {{ app()->getLocale() === 'fr' ? 'bg-[#081951] text-white shadow-2xs' : 'text-slate-600 hover:text-[#081951]' }}"
-                    title="Français"
+            <!-- Language Selector Dropdown -->
+            <div class="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg px-2.5 py-1.5 transition-colors text-xs font-semibold">
+                <i class="fas fa-globe text-xs text-[#081951]"></i>
+                <label for="public-header-lang-select" class="sr-only">{{ __('portal.select_language') }}</label>
+                <select
+                    id="public-header-lang-select"
+                    onchange="window.location.href = this.value"
+                    class="bg-transparent text-xs font-bold text-slate-700 focus:outline-hidden cursor-pointer pr-1"
                 >
-                    FR
-                </a>
-                <a
-                    href="{{ route('locale.switch', 'en') }}"
-                    class="px-2 py-1 rounded-md transition-colors {{ app()->getLocale() === 'en' ? 'bg-[#081951] text-white shadow-2xs' : 'text-slate-600 hover:text-[#081951]' }}"
-                    title="English"
-                >
-                    EN
-                </a>
+                    <option value="{{ route('locale.switch', 'fr') }}" {{ app()->getLocale() === 'fr' ? 'selected' : '' }}>
+                        🇫🇷 Français (FR)
+                    </option>
+                    <option value="{{ route('locale.switch', 'en') }}" {{ app()->getLocale() === 'en' ? 'selected' : '' }}>
+                        🇬🇧 English (EN)
+                    </option>
+                </select>
             </div>
 
             <a

@@ -36,4 +36,8 @@ return [
     'portal_active' => 'Portal Active',
     'filter_lang' => 'Document Language',
     'all_languages' => 'All languages',
+    'select_language' => 'Select language',
+    'open_pdf' => 'Open PDF',
+    'view_full_document' => 'View full document',
+    'search_prompt_for_sections' => 'Search to extract specific sub-sections and paragraphs',
 ];

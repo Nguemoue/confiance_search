@@ -39,6 +39,12 @@ new class extends Component
     {
         $this->stats = $stats;
         $this->searchHistory = session('search_history', []);
+
+        if (request()->has('lang') && in_array(request()->query('lang'), ['fr', 'en', 'all'])) {
+            $this->docLanguage = (string) request()->query('lang');
+        } elseif (! in_array($this->docLanguage, ['fr', 'en'])) {
+            $this->docLanguage = app()->getLocale() === 'en' ? 'en' : 'fr';
+        }
     }
 
     public function clearFilters(): void
@@ -51,17 +57,25 @@ new class extends Component
         $this->activeTab = $tab;
     }
 
+    public function switchLanguageAndLocale(string $lang): void
+    {
+        if (in_array($lang, ['fr', 'en', 'all'])) {
+            $this->docLanguage = $lang;
+            if ($lang !== 'all') {
+                session(['locale' => $lang]);
+                app()->setLocale($lang);
+            }
+        }
+    }
+
     public function setLanguage(string $lang): void
     {
-        $this->docLanguage = $lang;
+        $this->switchLanguageAndLocale($lang);
     }
 
     public function switchAppLocale(string $locale): void
     {
-        if (in_array($locale, ['fr', 'en'])) {
-            session(['locale' => $locale]);
-            app()->setLocale($locale);
-        }
+        $this->switchLanguageAndLocale($locale);
     }
 
     /**
@@ -171,39 +185,35 @@ new class extends Component
 
         $documents = $documentsQuery->latest()->get();
 
-        // Fetch topics matching search query (only when no strict EN filter active)
-        if ($this->docLanguage === 'en') {
-            $topics = new Collection();
-        } else {
-            if ($trimmedSearch !== '') {
-                try {
-                    $topics = Topic::search($trimmedSearch)
-                        ->query(function ($query): void {
-                            $query->published()
-                                ->with([
-                                    'options' => fn ($q) => $q->published()->orderBy('order'),
-                                ]);
-                        })
-                        ->get();
-                } catch (\Throwable $e) {
-                    $topics = Topic::query()
-                        ->published()
-                        ->with([
-                            'options' => fn ($q) => $q->published()->orderBy('order'),
-                        ])
-                        ->search($trimmedSearch)
-                        ->orderBy('order')
-                        ->get();
-                }
-            } else {
+        // Fetch topics matching search query
+        if ($trimmedSearch !== '') {
+            try {
+                $topics = Topic::search($trimmedSearch)
+                    ->query(function ($query): void {
+                        $query->published()
+                            ->with([
+                                'options' => fn ($q) => $q->published()->orderBy('order'),
+                            ]);
+                    })
+                    ->get();
+            } catch (\Throwable $e) {
                 $topics = Topic::query()
                     ->published()
                     ->with([
                         'options' => fn ($q) => $q->published()->orderBy('order'),
                     ])
+                    ->search($trimmedSearch)
                     ->orderBy('order')
                     ->get();
             }
+        } else {
+            $topics = Topic::query()
+                ->published()
+                ->with([
+                    'options' => fn ($q) => $q->published()->orderBy('order'),
+                ])
+                ->orderBy('order')
+                ->get();
         }
 
         $totalTopicsCount = $this->stats['total_topics'] ?? Topic::query()->published()->count();
@@ -282,16 +292,13 @@ new class extends Component
                     this.openDocuments[{{ $d->id }}] = true;
                 @endforeach
             } else {
-                @if($documents->first())
-                    this.openDocuments[{{ $documents->first()->id }}] = true;
-                @endif
-                @if($topics->first())
-                    this.openTopics[{{ $topics->first()->id }}] = true;
-                @endif
+                this.openTopics = {};
+                this.openDocuments = {};
             }
 
             $wire.$watch('search', (newVal) => {
-                if ((newVal || '').trim() !== '') {
+                const query = (newVal || '').trim();
+                if (query !== '') {
                     this.$nextTick(() => {
                         document.querySelectorAll('[data-topic-id]').forEach(el => {
                             const id = parseInt(el.getAttribute('data-topic-id'), 10);
@@ -302,6 +309,9 @@ new class extends Component
                             if (id) this.openDocuments[id] = true;
                         });
                     });
+                } else {
+                    this.openTopics = {};
+                    this.openDocuments = {};
                 }
             });
         }
@@ -698,23 +708,21 @@ new class extends Component
             </div>
 
             <!-- Top Right Action Controls -->
-            <div class="flex items-center gap-2">
-                <!-- Direct Language Switcher in Header -->
-                <div class="hidden sm:flex items-center rounded-lg border border-slate-200 p-0.5 bg-slate-50 text-xs font-semibold">
-                    <button
-                        type="button"
-                        wire:click="switchAppLocale('fr')"
-                        class="px-2 py-0.5 rounded transition-colors cursor-pointer {{ app()->getLocale() === 'fr' ? 'bg-[#081951] text-white' : 'text-slate-600 hover:text-[#081951]' }}"
+            <div class="flex items-center gap-2 sm:gap-3">
+                <!-- Direct Language Selector in Header -->
+                <div class="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl px-2.5 py-1.5 transition-colors shadow-2xs">
+                    <i class="fas fa-globe text-xs text-[#081951]"></i>
+                    <label for="header-language-selector" class="sr-only">{{ __('portal.select_language') }}</label>
+                    <select
+                        id="header-language-selector"
+                        wire:change="switchLanguageAndLocale($event.target.value)"
+                        class="bg-transparent text-xs font-bold text-slate-700 focus:outline-hidden cursor-pointer pr-1"
+                        aria-label="{{ __('portal.select_language') }}"
                     >
-                        FR
-                    </button>
-                    <button
-                        type="button"
-                        wire:click="switchAppLocale('en')"
-                        class="px-2 py-0.5 rounded transition-colors cursor-pointer {{ app()->getLocale() === 'en' ? 'bg-[#081951] text-white' : 'text-slate-600 hover:text-[#081951]' }}"
-                    >
-                        EN
-                    </button>
+                        <option value="fr" {{ $docLanguage === 'fr' ? 'selected' : '' }}>🇫🇷 Français (FR)</option>
+                        <option value="en" {{ $docLanguage === 'en' ? 'selected' : '' }}>🇬🇧 English (EN)</option>
+                        <option value="all" {{ $docLanguage === 'all' ? 'selected' : '' }}>🌐 {{ __('portal.all_languages') }}</option>
+                    </select>
                 </div>
 
                 <a
@@ -950,32 +958,32 @@ new class extends Component
                             $pdfUrl = Storage::url($doc->file_path);
                             $matchingSections = !empty($search) 
                                 ? $doc->sections->filter(fn ($s) => mb_stripos($s->content, $search) !== false || mb_stripos($s->section_title, $search) !== false || mb_stripos($s->reference_label, $search) !== false)
-                                : $doc->sections;
+                                : collect();
                         @endphp
                         <div
                             data-doc-id="{{ $doc->id }}"
                             id="doc-{{ $doc->id }}"
                             class="bg-white rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition-all duration-150 overflow-hidden"
                         >
-                            <!-- Document Header Trigger -->
+                            <!-- Document Header Card -->
                             <div
-                                @click="toggleDoc({{ $doc->id }})"
-                                class="p-4 sm:p-5 cursor-pointer flex items-start justify-between gap-4 select-none hover:bg-slate-50/60 transition-colors"
+                                @if(!empty($search)) @click="toggleDoc({{ $doc->id }})" @endif
+                                class="p-4 sm:p-5 flex items-start justify-between gap-4 select-none @if(!empty($search)) cursor-pointer hover:bg-slate-50/60 transition-colors @endif"
                             >
-                                <div class="flex items-start gap-3.5">
+                                <div class="flex items-start gap-3.5 flex-1 min-w-0">
                                     <div class="shrink-0 size-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center border border-rose-200 shadow-2xs">
                                         <i class="fas fa-file-pdf text-lg"></i>
                                     </div>
 
-                                    <div>
-                                        <div class="flex flex-wrap items-center gap-2 mb-1">
+                                    <div class="flex-1 min-w-0">
+                                        <div class="flex flex-wrap items-center gap-2 mb-1.5">
                                             <!-- Official Document Source Reference Code -->
                                             <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-xs font-mono font-bold bg-[#081951] text-white tracking-wide shadow-2xs" title="Référence Source Officielle">
                                                 <i class="fas fa-barcode text-[10px]"></i>
                                                 {{ $doc->reference_code }}
                                             </span>
 
-                                            <h2 class="text-base font-bold text-slate-900 font-display">
+                                            <h2 class="text-base font-bold text-slate-900 font-display truncate">
                                                 {!! $this->highlightText($doc->title) !!}
                                             </h2>
 
@@ -1001,9 +1009,26 @@ new class extends Component
                                         </div>
 
                                         @if($doc->description)
-                                            <p class="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans">
+                                            <p class="text-xs sm:text-sm text-slate-600 leading-relaxed font-sans line-clamp-2">
                                                 {!! $this->highlightText($doc->description) !!}
                                             </p>
+                                        @endif
+
+                                        @if(empty($search))
+                                            <div class="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                                                <span class="inline-flex items-center gap-1.5">
+                                                    <i class="fas fa-magnifying-glass text-slate-400"></i>
+                                                    <span>{{ __('portal.search_prompt_for_sections') }}</span>
+                                                </span>
+                                                <a
+                                                    href="{{ $pdfUrl }}"
+                                                    target="_blank"
+                                                    class="inline-flex items-center gap-1 text-[#081951] font-semibold hover:underline"
+                                                >
+                                                    <span>{{ __('portal.view_full_document') }}</span>
+                                                    <i class="fas fa-arrow-right text-[10px]"></i>
+                                                </a>
+                                            </div>
                                         @endif
                                     </div>
                                 </div>
@@ -1014,10 +1039,12 @@ new class extends Component
                                         href="{{ $pdfUrl }}"
                                         target="_blank"
                                         @click.stop
-                                        class="p-1.5 rounded-lg text-slate-400 hover:text-[#081951] hover:bg-slate-100 transition-colors cursor-pointer"
-                                        title="Ouvrir le PDF complet dans un nouvel onglet"
+                                        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-50 hover:bg-[#081951] hover:text-white text-slate-700 border border-slate-200 transition-all cursor-pointer shadow-2xs"
+                                        title="{{ __('portal.download_pdf') }}"
                                     >
-                                        <i class="fas fa-arrow-up-right-from-square text-xs"></i>
+                                        <i class="fas fa-file-pdf text-rose-500"></i>
+                                        <span class="hidden sm:inline">{{ __('portal.open_pdf') }}</span>
+                                        <i class="fas fa-arrow-up-right-from-square text-[10px]"></i>
                                     </a>
 
                                     <button
@@ -1034,103 +1061,99 @@ new class extends Component
                                         </template>
                                     </button>
 
-                                    <div class="text-slate-400">
-                                        <i
-                                            class="fas fa-chevron-down text-xs transform transition-transform duration-200"
-                                            :class="isDocOpen({{ $doc->id }}) ? 'rotate-180 text-[#081951]' : 'text-slate-400'"
-                                        ></i>
-                                    </div>
+                                    @if(!empty($search))
+                                        <div class="text-slate-400 pl-1">
+                                            <i
+                                                class="fas fa-chevron-down text-xs transform transition-transform duration-200"
+                                                :class="isDocOpen({{ $doc->id }}) ? 'rotate-180 text-[#081951]' : 'text-slate-400'"
+                                            ></i>
+                                        </div>
+                                    @endif
                                 </div>
                             </div>
 
-                            <!-- Document Sections & Snippets Accordion with Source Reference per Paragraph -->
-                            <div
-                                x-show="isDocOpen({{ $doc->id }})"
-                                x-transition:enter="transition ease-out duration-150"
-                                x-transition:enter-start="opacity-0 -translate-y-1"
-                                x-transition:enter-end="opacity-100 translate-y-0"
-                                x-transition:leave="transition ease-in duration-100"
-                                x-transition:leave-start="opacity-100 translate-y-0"
-                                x-transition:leave-end="opacity-0 -translate-y-1"
-                                class="border-t border-slate-100 bg-[#f8fafc] p-4 sm:p-5 space-y-3"
-                            >
-                                <div class="text-xs text-slate-500 font-medium flex items-center justify-between pb-1">
-                                    <span>
-                                        @if(!empty($search))
+                            <!-- Document Sections & Snippets Accordion with Source Reference per Paragraph (ONLY WHEN SEARCHING) -->
+                            @if(!empty($search))
+                                <div
+                                    x-show="isDocOpen({{ $doc->id }})"
+                                    x-transition:enter="transition ease-out duration-150"
+                                    x-transition:enter-start="opacity-0 -translate-y-1"
+                                    x-transition:enter-end="opacity-100 translate-y-0"
+                                    x-transition:leave="transition ease-in duration-100"
+                                    x-transition:leave-start="opacity-100 translate-y-0"
+                                    x-transition:leave-end="opacity-0 -translate-y-1"
+                                    class="border-t border-slate-100 bg-[#f8fafc] p-4 sm:p-5 space-y-3"
+                                >
+                                    <div class="text-xs text-slate-500 font-medium flex items-center justify-between pb-1">
+                                        <span>
                                             Passages spécifiques liés à la recherche « <strong class="text-[#081951]">{{ $search }}</strong> » :
-                                        @else
-                                            Sections et paragraphes indexés du document :
-                                        @endif
-                                    </span>
-                                    <a
-                                        href="{{ $pdfUrl }}"
-                                        download="{{ $doc->original_filename }}"
-                                        class="inline-flex items-center gap-1.5 text-xs text-[#081951] hover:underline font-semibold"
-                                    >
-                                        <i class="fas fa-download text-[10px]"></i>
-                                        <span>{{ __('portal.download_pdf') }}</span>
-                                    </a>
-                                </div>
+                                        </span>
+                                        <a
+                                            href="{{ $pdfUrl }}"
+                                            download="{{ $doc->original_filename }}"
+                                            class="inline-flex items-center gap-1.5 text-xs text-[#081951] hover:underline font-semibold"
+                                        >
+                                            <i class="fas fa-download text-[10px]"></i>
+                                            <span>{{ __('portal.download_pdf') }}</span>
+                                        </a>
+                                    </div>
 
-                                @forelse($matchingSections as $section)
-                                    <div class="bg-white rounded-lg p-4 border border-slate-200 shadow-2xs space-y-2.5">
-                                        <!-- Header with Document Source Reference and Parent Section -->
-                                        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                                            <div class="flex flex-wrap items-center gap-2 text-xs">
-                                                <!-- Explicit Source Document Reference Badge -->
-                                                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700 font-mono text-[11px] font-bold" title="Document Source">
-                                                    <i class="fas fa-file-lines text-slate-400"></i>
-                                                    <span>{{ $doc->reference_code }}</span>
-                                                </span>
+                                    @forelse($matchingSections as $section)
+                                        <div class="bg-white rounded-lg p-4 border border-slate-200 shadow-2xs space-y-2.5">
+                                            <!-- Header with Document Source Reference and Parent Section -->
+                                            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                                                <div class="flex flex-wrap items-center gap-2 text-xs">
+                                                    <!-- Explicit Source Document Reference Badge -->
+                                                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700 font-mono text-[11px] font-bold" title="Document Source">
+                                                        <i class="fas fa-file-lines text-slate-400"></i>
+                                                        <span>{{ $doc->reference_code }}</span>
+                                                    </span>
 
-                                                <span class="text-slate-300">&bull;</span>
+                                                    <span class="text-slate-300">&bull;</span>
 
-                                                <!-- Parent Section Title -->
-                                                <span class="inline-flex items-center gap-1.5 font-bold text-slate-900 font-display">
-                                                    <i class="fas fa-folder-open text-[#081951] text-xs"></i>
-                                                    <span>{{ $section->section_title ?: 'Section' }}</span>
-                                                </span>
+                                                    <!-- Parent Section Title -->
+                                                    <span class="inline-flex items-center gap-1.5 font-bold text-slate-900 font-display">
+                                                        <i class="fas fa-folder-open text-[#081951] text-xs"></i>
+                                                        <span>{{ $section->section_title ?: 'Section' }}</span>
+                                                    </span>
+                                                </div>
+
+                                                <div class="flex items-center gap-2">
+                                                    <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#f1f4fa] text-[#081951] border border-[#e2e8f4]">
+                                                        {{ __('portal.page') }} {{ $section->page_number }}
+                                                    </span>
+                                                    <a
+                                                        href="{{ $pdfUrl }}#page={{ $section->page_number }}"
+                                                        target="_blank"
+                                                        class="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-[#081951] hover:bg-[#0e2454] text-white transition-colors"
+                                                        title="Consulter le document source à la page {{ $section->page_number }}"
+                                                    >
+                                                        <i class="fas fa-book-open-reader text-[10px]"></i>
+                                                        <span>{{ __('portal.open_page') }} {{ $section->page_number }} &rarr;</span>
+                                                    </a>
+                                                </div>
                                             </div>
 
-                                            <div class="flex items-center gap-2">
-                                                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#f1f4fa] text-[#081951] border border-[#e2e8f4]">
-                                                    {{ __('portal.page') }} {{ $section->page_number }}
-                                                </span>
-                                                <a
-                                                    href="{{ $pdfUrl }}#page={{ $section->page_number }}"
-                                                    target="_blank"
-                                                    class="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-[#081951] hover:bg-[#0e2454] text-white transition-colors"
-                                                    title="Consulter le document source à la page {{ $section->page_number }}"
-                                                >
-                                                    <i class="fas fa-book-open-reader text-[10px]"></i>
-                                                    <span>{{ __('portal.open_page') }} {{ $section->page_number }} &rarr;</span>
-                                                </a>
-                                            </div>
-                                        </div>
-
-                                        <!-- Contextual Periphery Snippet -->
-                                        <div class="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans">
-                                            @if(!empty($search))
+                                            <!-- Contextual Periphery Snippet -->
+                                            <div class="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans">
                                                 <p class="italic bg-slate-50 p-3 rounded-md border border-slate-200/70">
                                                     « {!! $this->getSnippet($section->content) !!} »
                                                 </p>
-                                            @else
-                                                <p>{!! nl2br(e($section->content)) !!}</p>
-                                            @endif
-                                        </div>
+                                            </div>
 
-                                        <!-- Bottom Reference Stamp -->
-                                        <div class="pt-1.5 flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                                            <span>Réf. complète : {{ $section->reference_label }}</span>
-                                            <span>Fichier : {{ $doc->original_filename }}</span>
+                                            <!-- Bottom Reference Stamp -->
+                                            <div class="pt-1.5 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                                                <span>Réf. complète : {{ $section->reference_label }}</span>
+                                                <span>Fichier : {{ $doc->original_filename }}</span>
+                                            </div>
                                         </div>
-                                    </div>
-                                @empty
-                                    <p class="text-xs text-slate-400 italic py-2">
-                                        {{ __('portal.no_results') }}
-                                    </p>
-                                @endforelse
-                            </div>
+                                    @empty
+                                        <p class="text-xs text-slate-400 italic py-2">
+                                            {{ __('portal.no_results') }}
+                                        </p>
+                                    @endforelse
+                                </div>
+                            @endif
                         </div>
                     @empty
                         <div class="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-500 text-xs">

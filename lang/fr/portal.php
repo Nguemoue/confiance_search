@@ -36,4 +36,8 @@ return [
     'portal_active' => 'Portail Opérationnel',
     'filter_lang' => 'Langue des documents',
     'all_languages' => 'Toutes les langues',
+    'select_language' => 'Sélectionner la langue',
+    'open_pdf' => 'Ouvrir le PDF',
+    'view_full_document' => 'Consulter le document complet',
+    'search_prompt_for_sections' => 'Effectuez une recherche pour extraire les sous-sections et paragraphes spécifiques',
 ];
